@@ -1,0 +1,160 @@
+library(RMySQL)
+library(tidyverse)
+library(lubridate)
+library(rio)
+library(plotly)
+
+s <- Sys.time()
+
+## Input
+start_date_time <- "2024-08-07 00:00:00"
+end_date_time <- "2024-08-07 23:59:59"
+
+date_part <- as.Date(start_date_time)
+
+account_type_list <- c(
+  "Evaluation", 
+  "Express",
+  "Stellar 1-Step", 
+  "Stellar 2-Step",
+  "Stellar Lite 2-Step"
+)
+
+crypto_list <- c("ADAUSD","BCHUSD","BTCUSD","DOGUSD","ETHUSD","LNKUSD","LTCUSD","XLMUSD","XMRUSD","XRPUSD")
+
+commodities_list <- c("UKOUSD", "USOUSD", "XAUUSD", "XAGUSD", "XPTUSD")
+
+indices_list <- c("AUS200", "HK50", "EUSTX50", "FRA40", "GER30", "NTH25", "SWI20", "AUDUSD", "SPX500", "UK100", "US30", "JP225", "US2000", "NDX100")
+
+forex_list <- c("AUDCAD", "AUDCHF", "AUDJPY", "AUDNZD", "AUDSGD", "AUDUSD", "CADCHF", "CADJPY", "CHFJPY", "EURAUD", "EURCAD", "EURCHF", "EURGBP", "EURHKD", "EURHUF", "EURJPY", "EURNOK", "EURNZD", "EURSGD", "EURTRY", "EURUSD", "GBPAUD", "GBPCAD", "GBPCHF", "GBPJPY", "GBPNZD", "GBPSGD", "GBPUSD", "MXNJPY", "NOKJPY", "NZDCAD", "NZDCHF", "NZDJPY", "NZDSGD", "NZDUSD", "SGDJPY", "USDCAD", "USDCHF", "USDCNH", "USDDKK", "USDHKD", "USDHUF", "USDJPY", "USDMXN", "USDNOK", "USDPLN", "USDSEK", "USDSGD", "USDTRY", "USDZAR", "ZARJPY", "CADEUR")
+
+### Database Connection & Tables Connection -------------------
+api_backend <- dbConnect(
+  MySQL(),
+  dbname = "api_backend",
+  user = "readonly_user",
+  password = "password123",
+  host = "fundednext-production.cqtlpb5sm2vt.ap-northeast-1.rds.amazonaws.com",
+  port = 3306
+)
+
+suppressWarnings({
+  start_time <- as.numeric(as.POSIXct(start_date_time, tz = "GMT"))
+  end_time <- as.numeric(as.POSIXct(end_date_time, tz = "GMT"))
+  
+  trades_df <- tbl(api_backend, "trades") %>%
+    filter(
+      (open_time >= start_time & open_time <= end_time) |
+        (close_time >= start_time & close_time <= end_time)
+    ) %>%
+    collect()
+  
+  accounts_df <- tbl(api_backend, "accounts") %>%
+    filter(login %in% !!trades_df$login) %>%
+    collect()
+  
+  customers_df <- tbl(api_backend, "customers") %>%
+    filter(id %in% !!accounts_df$customer_id) %>%
+    collect()
+  
+  countries_df <- collect(tbl(api_backend, "countries"))
+  
+  mt_servers_df <- tbl(api_backend, "mt_servers") %>%
+    collect()
+  
+  plans_df <- tbl(api_backend, "plans") %>%
+    collect()
+  
+  customers_df <- customers_df %>%
+    select(-country) %>%
+    left_join(
+      select(countries_df, country_id = id, country = name)
+    )
+  accounts_df <- accounts_df %>%
+    left_join(
+      select(customers_df, customer_id = id, country, email)
+    ) %>%
+    mutate(account_size = paste0(round(starting_balance/1000, 0), "K"))  
+})
+
+suppressMessages({
+  accounts_df_mod <- accounts_df %>%
+    left_join(select(plans_df, plan_id = id, leverage), by = c("plan_id" = "plan_id")) %>%
+    mutate(
+      account_type = case_when(
+        grepl("Evaluation", type, ignore.case=T)~"Evaluation",
+        grepl("Express", type, ignore.case=T)~"Express",
+        grepl("Stellar 1-Step", type, ignore.case=T)~"Stellar 1-Step",
+        grepl("Stellar 2-Step", type, ignore.case=T)~"Stellar 2-Step",
+        grepl("Stellar Lite 2-Step", type, ignore.case=T)~"Stellar Lite 2-Step",
+        TRUE ~ "Unknown"
+      )
+    )
+  
+  trades_df_filtered <- trades_df %>%
+    left_join(
+      select(accounts_df_mod, id, account_type, email, account_size, country, equity, type, breachedby, server_id, leverage), by=c("account_id"="id")
+    ) %>%
+    filter(account_type %in% account_type_list) %>%
+    filter(
+      !grepl("wearenext.io", email, ignore.case=T),
+      !grepl("pakeraind.com", email, ignore.case=T),
+      !grepl("fundednext.com", email, ignore.case=T),
+      !grepl("jayedcorp.com", email, ignore.case=T)
+    ) %>%
+    mutate(lot_size = volume/100) %>%
+    mutate(symbol = str_replace(symbol, regex("\\.[a-z]"), "")) %>%
+    mutate(type_of_symbol = case_when(
+      symbol %in% crypto_list ~ "crypto",
+      symbol %in% commodities_list ~ "commodities",
+      symbol %in% indices_list ~ "indices",
+      symbol %in% forex_list ~ "forex",
+      TRUE ~ "other"
+    )) %>%
+    mutate(FinalLot = ifelse(grepl("^(300|700)", login), lots, lot_size)) %>%
+    relocate(lots, lot_size, FinalLot, .after = login) %>%
+    
+    # Calculate RRR, Risk Per Trade, Trade Duration, Margin Utilization, and Session Time
+    mutate(
+      RRR = ifelse(profit > 0, profit / abs(open_price - sl), profit / abs(sl - open_price)),
+      `Risk Per Trade` = ifelse(is.na(sl), 0, ifelse(sl > (open_price - close_price), FinalLot * (open_price - close_price), 0)),
+      trade_duration = as.numeric(difftime(as.POSIXct(close_time, origin="1970-01-01", tz="UTC"), as.POSIXct(open_time, origin="1970-01-01", tz="UTC"), units = "secs")),
+      margin_utilization = case_when(
+        type_of_symbol == "crypto" ~ (as.numeric(account_size) * 1 * FinalLot) / leverage,
+        type_of_symbol == "forex" ~ (as.numeric(account_size) * 100000 * FinalLot) / leverage,
+        type_of_symbol == "indices" ~ (as.numeric(account_size) * 10 * FinalLot) / leverage,
+        type_of_symbol == "commodities" ~ (as.numeric(account_size) * 100 * FinalLot) / leverage,
+        TRUE ~ NA_real_
+      ),
+      session_time = case_when(
+        between(hour(as.POSIXct(open_time, origin="1970-01-01", tz="UTC")), 0, 2) & between(minute(as.POSIXct(open_time, origin="1970-01-01", tz="UTC")), 15, 44) ~ "Market-Open Session",
+        between(hour(as.POSIXct(open_time, origin="1970-01-01", tz="UTC")), 2, 8) & between(minute(as.POSIXct(open_time, origin="1970-01-01", tz="UTC")), 45, 59) ~ "Prime Asia Session",
+        between(hour(as.POSIXct(open_time, origin="1970-01-01", tz="UTC")), 9, 9) & between(minute(as.POSIXct(open_time, origin="1970-01-01", tz="UTC")), 0, 59) ~ "Pre London Session",
+        between(hour(as.POSIXct(open_time, origin="1970-01-01", tz="UTC")), 10, 10) & between(minute(as.POSIXct(open_time, origin="1970-01-01", tz="UTC")), 0, 4) ~ "London Opening Session",
+        between(hour(as.POSIXct(open_time, origin="1970-01-01", tz="UTC")), 10, 13) & between(minute(as.POSIXct(open_time, origin="1970-01-01", tz="UTC")), 5, 59) ~ "London Session",
+        between(hour(as.POSIXct(open_time, origin="1970-01-01", tz="UTC")), 14, 14) & between(minute(as.POSIXct(open_time, origin="1970-01-01", tz="UTC")), 0, 59) ~ "Pre-NY Session",
+        between(hour(as.POSIXct(open_time, origin="1970-01-01", tz="UTC")), 15, 15) & between(minute(as.POSIXct(open_time, origin="1970-01-01", tz="UTC")), 0, 4) ~ "NY-Open Session",
+        between(hour(as.POSIXct(open_time, origin="1970-01-01", tz="UTC")), 15, 16) & between(minute(as.POSIXct(open_time, origin="1970-01-01", tz="UTC")), 5, 29) ~ "Pre-NYSE Session",
+        between(hour(as.POSIXct(open_time, origin="1970-01-01", tz="UTC")), 16, 16) & between(minute(as.POSIXct(open_time, origin="1970-01-01", tz="UTC")), 30, 35) ~ "NYSE-Open Session",
+        between(hour(as.POSIXct(open_time, origin="1970-01-01", tz="UTC")), 16, 21) & between(minute(as.POSIXct(open_time, origin="1970-01-01", tz="UTC")), 36, 0) ~ "NY Session",
+        between(hour(as.POSIXct(open_time, origin="1970-01-01", tz="UTC")), 21, 22) & between(minute(as.POSIXct(open_time, origin="1970-01-01", tz="UTC")), 1, 59) ~ "Late Trading Hours Session",
+        between(hour(as.POSIXct(open_time, origin="1970-01-01", tz="UTC")), 23, 23) & between(minute(as.POSIXct(open_time, origin="1970-01-01", tz="UTC")), 0, 59) ~ "Market-Closing Session",
+        TRUE ~ "Outside Session"
+      )
+    ) %>%
+    
+    # Select and reorder columns as requested
+    select(
+      id, account_id, close_time_str, commission, login, FinalLot, 
+      open_price, pips, profit, sl, state, swap, symbol, ticket, tp, 
+      type_str, volume, account_type, email, account_size, country, equity, 
+      type.y, breachedby, type_of_symbol, server_type, server, RRR, `Risk Per Trade`,
+      open_time_str, trade_duration, margin_utilization, session_time
+    )
+  
+  write_csv(final_df, paste0("Minal_output_", date_part, ".csv"))
+  
+  invisible(lapply(dbListConnections(MySQL()), dbDisconnect))
+})
+
+print(Sys.time()-s)
