@@ -1,0 +1,98 @@
+library(RMySQL)
+library(tidyverse)
+library(lubridate)
+library(rio)
+
+s <- Sys.time()
+
+## Input: Dates for filtering
+start_date_time <- "2024-06-01 00:00:00"  # Start of June
+end_date_time <- "2024-07-31 23:59:59"    # End of July
+
+start_time <- as.numeric(as.POSIXct(start_date_time, tz = "GMT"))
+end_time <- as.numeric(as.POSIXct(end_date_time, tz = "GMT"))
+
+### Database Connection & Tables Connection -------------------
+api_backend <- dbConnect(
+  MySQL(),
+  dbname = "api_backend",
+  user = "readonly_user",
+  password = "password123",
+  host = "fundednext-production.cqtlpb5sm2vt.ap-northeast-1.rds.amazonaws.com",
+  port = 3306
+)
+
+# Load CSV containing logins from the same folder as the R script
+login_csv <- read_csv("Logins.csv")  # Replace with your actual CSV filename
+
+suppressWarnings({
+  # Fetching data from the database
+  trades_df <- tbl(api_backend, "trades") %>%
+    filter(
+      (open_time >= start_time & open_time <= end_time) |
+      (close_time >= start_time & close_time <= end_time)
+    ) %>%
+    collect()
+  
+  accounts_df <- tbl(api_backend, "accounts") %>%
+    filter(login %in% !!login_csv$login) %>%
+    collect()
+  
+  customers_df <- tbl(api_backend, "customers") %>%
+    filter(id %in% !!accounts_df$customer_id) %>%
+    collect()
+  
+  countries_df <- collect(tbl(api_backend, "countries"))
+  
+  plans_df <- tbl(api_backend, "plans") %>%
+    collect()
+  
+  # Joining data
+  customers_df <- customers_df %>%
+    select(-country) %>%
+    left_join(
+      select(countries_df, country_id = id, country = name)
+    )
+  
+  accounts_df <- accounts_df %>%
+    left_join(
+      select(customers_df, customer_id = id, country, email)
+    ) %>%
+    left_join(select(plans_df, plan_id = id, leverage), by = c("plan_id" = "plan_id")) %>%
+    mutate(
+      account_type = case_when(
+        grepl("Evaluation", type, ignore.case=T) ~ "Evaluation",
+        grepl("Express", type, ignore.case=T) ~ "Express",
+        grepl("Stellar 1-Step", type, ignore.case=T) ~ "Stellar 1-Step",
+        grepl("Stellar 2-Step", type, ignore.case=T) ~ "Stellar 2-Step",
+        grepl("Stellar Lite 2-Step", type, ignore.case=T) ~ "Stellar Lite 2-Step",
+        TRUE ~ "Unknown"
+      )
+    )
+})
+
+suppressMessages({
+  # Filter logins from the CSV by matching account_type
+  filtered_logins <- login_csv %>%
+    inner_join(accounts_df, by = "login") %>%
+    filter(account_type %in% unique(accounts_df$account_type))
+  
+  # Iterate over each account_type
+  for (account_type in unique(filtered_logins$account_type)) {
+    logins_for_type <- filtered_logins %>%
+      filter(account_type == !!account_type) %>%
+      pull(login)
+    
+    # Filter trades for these logins in June and July
+    trades_for_type <- trades_df %>%
+      filter(login %in% logins_for_type)
+    
+    # Write the filtered trades to a CSV file named after the account_type
+    write_csv(trades_for_type, paste0(account_type, "_trades_June_July.csv"))
+  }
+  
+  # Disconnect from the database
+  invisible(lapply(dbListConnections(MySQL()), dbDisconnect))
+})
+
+print(Sys.time()-s)
