@@ -1,0 +1,193 @@
+import pandas as pd
+from sqlalchemy import create_engine
+import os
+import time
+
+# Database connection details
+dbname = "api_backend"
+user = "readonly_user"
+password = "password123"
+host = "fundednext-production.cqtlpb5sm2vt.ap-northeast-1.rds.amazonaws.com"
+port = 3306
+
+# Time range for fetching data
+start_time = "2024.08.16 00:00:00"
+end_time = "2024.08.16 23:59:59"
+
+# Asset class lists
+crypto_list = ["ADAUSD", "BCHUSD", "BTCUSD", "DOGUSD", "ETHUSD", "LNKUSD", "LTCUSD", "XLMUSD", "XMRUSD", "XRPUSD"]
+commodities_list = ["UKOUSD", "USOUSD", "XAUUSD", "XAGUSD", "XPTUSD"]
+indices_list = ["AUS200", "HK50", "EUSTX50", "FRA40", "GER30", "NTH25", "SWI20", "AUDUSD", "SPX500", "UK100", "US30",
+                "JP225", "US2000", "NDX100"]
+forex_list = ["AUDCAD", "AUDCHF", "AUDJPY", "AUDNZD", "AUDSGD", "AUDUSD", "CADCHF", "CADJPY", "CHFJPY", "EURAUD",
+              "EURCAD", "EURCHF", "EURGBP", "EURHKD",
+              "EURHUF", "EURJPY", "EURNOK", "EURNZD", "EURSGD", "EURTRY", "EURUSD", "GBPAUD", "GBPCAD", "GBPCHF",
+              "GBPJPY", "GBPNZD", "GBPSGD", "GBPUSD",
+              "MXNJPY", "NOKJPY", "NZDCAD", "NZDCHF", "NZDJPY", "NZDSGD", "NZDUSD", "SGDJPY", "USDCAD", "USDCHF",
+              "USDCNH", "USDDKK", "USDHKD", "USDHUF",
+              "USDJPY", "USDMXN", "USDNOK", "USDPLN", "USDSEK", "USDSGD", "USDTRY", "USDZAR", "ZARJPY", "CADEUR"]
+
+# Path to the PycharmProjects directory
+pycharm_projects_folder = os.path.join(os.path.expanduser("~"), "PycharmProjects")
+output_file = os.path.join(pycharm_projects_folder, "4.csv")
+
+# Start timing the script
+start_run_time = time.time()
+
+try:
+    # Create a SQLAlchemy engine
+    engine = create_engine(f'mysql+mysqlconnector://{user}:{password}@{host}:{port}/{dbname}')
+    print("Fetching trades data...")
+
+    # Step 1: Fetch data from trades table based on the time range
+    trades_query = f"""
+    SELECT id, open_time, close_time, symbol, open_price, close_price, login, volume, close_time_str, commission, 
+           digits, open_time_str, profit, reason, sl, swap, ticket, tp, type_str
+    FROM trades 
+    WHERE open_time BETWEEN UNIX_TIMESTAMP('{start_time}') AND UNIX_TIMESTAMP('{end_time}')
+    OR close_time BETWEEN UNIX_TIMESTAMP('{start_time}') AND UNIX_TIMESTAMP('{end_time}');
+    """
+    trades_df = pd.read_sql(trades_query, engine)
+    print(f"Fetched {len(trades_df)} trades.")
+
+    if trades_df.empty:
+        print("No data found in the trades table for the given time range.")
+    else:
+        print("Fetching accounts data...")
+        # Convert account_ids to a tuple of Python integers
+        account_ids = tuple(int(x) for x in trades_df['login'].unique())
+        accounts_query = f"""
+        SELECT id AS account_id, type AS type_account, equity, breachedby, customer_id FROM accounts 
+        WHERE id IN {account_ids};
+        """
+        accounts_df = pd.read_sql(accounts_query, engine)
+        print(f"Fetched {len(accounts_df)} accounts.")
+
+        # Merge trades and accounts data on login
+        combined_df = pd.merge(trades_df, accounts_df, left_on='login', right_on='account_id', suffixes=('_trade', '_account'))
+
+        print("Fetching customers data...")
+        # Convert customer_ids to a tuple of Python integers
+        customer_ids = tuple(int(x) for x in accounts_df['customer_id'].unique())
+        customers_query = f"""
+        SELECT id AS customer_id, email, country_id FROM customers 
+        WHERE id IN {customer_ids};
+        """
+        customers_df = pd.read_sql(customers_query, engine)
+        print(f"Fetched {len(customers_df)} customers.")
+
+        # Merge combined data with customers data on customer_id
+        combined_df = pd.merge(combined_df, customers_df, on='customer_id', suffixes=('', '_customer'))
+
+        print("Fetching country names...")
+        # Convert country_ids to a tuple of Python integers
+        country_ids = tuple(int(x) for x in customers_df['country_id'].unique())
+        countries_query = f"""
+        SELECT id AS country_id, name AS country_name FROM countries 
+        WHERE id IN {country_ids};
+        """
+        countries_df = pd.read_sql(countries_query, engine)
+        print(f"Fetched {len(countries_df)} countries.")
+
+        # Merge combined data with countries data on country_id
+        final_df = pd.merge(combined_df, countries_df, on='country_id', suffixes=('', '_country'))
+
+        # Drop unwanted columns that exist in the DataFrame
+        columns_to_drop = ['account_id', 'created_at', 'updated_at', 'deleted_at', 'customer_id', 'country_id']
+        final_df = final_df.drop(columns=[col for col in columns_to_drop if col in final_df.columns])
+
+        # Add the symbol_type column based on asset class lists
+        final_df['symbol_type'] = final_df['symbol'].apply(
+            lambda x: 'crypto' if x in crypto_list else
+            'commodities' if x in commodities_list else
+            'indices' if x in indices_list else
+            'forex' if x in forex_list else
+            'other'
+        )
+
+        # Calculate the FinalLot column
+        final_df['FinalLot'] = final_df.apply(
+            lambda row: row['volume'] / 1000 if str(row['login']).startswith(('300', '700')) else row['volume'] / 100,
+            axis=1
+        )
+
+        # Calculate 'Pips' as 'open_price' - 'close_price' with specific logic for each symbol type
+        def calculate_pips(row):
+            if row['symbol_type'] == 'forex':
+                if row['symbol'] in ['JPY', 'XAUUSD', 'XAGUSD']:  # Handling JPY pairs and commodities
+                    return abs((row['open_price'] - row['close_price']) * 100)
+                else:
+                    return abs((row['open_price'] - row['close_price']) * 10000)
+            elif row['symbol_type'] == 'indices':
+                return abs(row['open_price'] - row['close_price'])
+            elif row['symbol_type'] == 'commodities':
+                return abs(row['open_price'] - row['close_price'])
+            elif row['symbol_type'] == 'crypto':
+                return abs(row['open_price'] - row['close_price'])
+            else:
+                return 0
+
+        final_df['Pips'] = final_df.apply(calculate_pips, axis=1)
+
+        # Calculate 'trade_duration' in hours
+        final_df['trade_duration'] = (pd.to_datetime(final_df['close_time'], unit='s') - pd.to_datetime(final_df['open_time'], unit='s')).dt.total_seconds() / 3600
+        final_df['trade_duration'] = final_df['trade_duration'].round(2)
+
+        # Calculate the 'Session' based on time ranges
+        def determine_session(time_str):
+            time_obj = pd.to_datetime(time_str).time()
+            if time_obj >= pd.to_datetime('00:15').time() and time_obj <= pd.to_datetime('02:44').time():
+                return 'Market-Open Session'
+            elif time_obj >= pd.to_datetime('02:45').time() and time_obj <= pd.to_datetime('08:59').time():
+                return 'Prime Asia Session'
+            elif time_obj >= pd.to_datetime('09:00').time() and time_obj <= pd.to_datetime('09:59').time():
+                return 'Pre London Session'
+            elif time_obj >= pd.to_datetime('10:00').time() and time_obj <= pd.to_datetime('10:04').time():
+                return 'London Opening Session'
+            elif time_obj >= pd.to_datetime('10:05').time() and time_obj <= pd.to_datetime('13:59').time():
+                return 'London Session'
+            elif time_obj >= pd.to_datetime('14:00').time() and time_obj <= pd.to_datetime('14:59').time():
+                return 'Pre-NY Session'
+            elif time_obj >= pd.to_datetime('15:00').time() and time_obj <= pd.to_datetime('15:04').time():
+                return 'NY-Open Session'
+            elif time_obj >= pd.to_datetime('15:05').time() and time_obj <= pd.to_datetime('16:29').time():
+                return 'Pre-NYSE Session'
+            elif time_obj >= pd.to_datetime('16:30').time() and time_obj <= pd.to_datetime('16:35').time():
+                return 'NYSE-Open Session'
+            elif time_obj >= pd.to_datetime('16:36').time() and time_obj <= pd.to_datetime('21:00').time():
+                return 'NY Session'
+            elif time_obj >= pd.to_datetime('21:01').time() and time_obj <= pd.to_datetime('22:59').time():
+                return 'Late Trading Hours Session'
+            elif time_obj >= pd.to_datetime('23:00').time() and time_obj <= pd.to_datetime('23:59').time():
+                return 'Market-Closing Session'
+            else:
+                return 'Unknown Session'
+
+        # Apply the session determination for both open_time_str and close_time_str
+        final_df['Session'] = final_df['open_time_str'].apply(determine_session)
+
+        # Display the first few rows of the resulting DataFrame before saving
+        print("Preview of the data:")
+        print(final_df[['symbol', 'open_price', 'close_price', 'symbol_type', 'Pips', 'trade_duration', 'Session']].head())
+
+        # Save the data to CSV
+        print("Saving data to CSV...")
+        final_df.to_csv(output_file, index=False)
+        print(f"Data successfully saved to {output_file}")
+
+except Exception as e:
+    print(f"Error: {e}")
+
+finally:
+    # Ensure the engine is disposed of if it was created
+    try:
+        engine.dispose()
+    except NameError:
+        print("Engine was not created, no need to dispose.")
+
+# End timing the script
+end_run_time = time.time()
+
+# Calculate and print the runtime
+runtime = end_run_time - start_run_time
+print(f"Script runtime: {runtime:.2f} seconds")
