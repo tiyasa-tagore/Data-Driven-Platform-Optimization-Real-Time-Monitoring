@@ -1,0 +1,120 @@
+import pandas as pd
+from sqlalchemy import create_engine
+import os
+import time
+
+# Database connection details
+dbname = "api_backend"
+user = "readonly_user"
+password = "password123"
+host = "fundednext-production.cqtlpb5sm2vt.ap-northeast-1.rds.amazonaws.com"
+port = 3306
+
+# Time range for fetching data
+start_time = "2024.08.16 00:00:00"
+end_time = "2024.08.16 23:59:59"
+
+# Asset class lists
+crypto_list = ["ADAUSD", "BCHUSD", "BTCUSD", "DOGUSD", "ETHUSD", "LNKUSD", "LTCUSD", "XLMUSD", "XMRUSD", "XRPUSD"]
+commodities_list = ["UKOUSD", "USOUSD", "XAUUSD", "XAGUSD", "XPTUSD"]
+indices_list = ["AUS200", "HK50", "EUSTX50", "FRA40", "GER30", "NTH25", "SWI20", "AUDUSD", "SPX500", "UK100", "US30",
+                "JP225", "US2000", "NDX100"]
+forex_list = ["AUDCAD", "AUDCHF", "AUDJPY", "AUDNZD", "AUDSGD", "AUDUSD", "CADCHF", "CADJPY", "CHFJPY", "EURAUD",
+              "EURCAD", "EURCHF", "EURGBP", "EURHKD",
+              "EURHUF", "EURJPY", "EURNOK", "EURNZD", "EURSGD", "EURTRY", "EURUSD", "GBPAUD", "GBPCAD", "GBPCHF",
+              "GBPJPY", "GBPNZD", "GBPSGD", "GBPUSD",
+              "MXNJPY", "NOKJPY", "NZDCAD", "NZDCHF", "NZDJPY", "NZDSGD", "NZDUSD", "SGDJPY", "USDCAD", "USDCHF",
+              "USDCNH", "USDDKK", "USDHKD", "USDHUF",
+              "USDJPY", "USDMXN", "USDNOK", "USDPLN", "USDSEK", "USDSGD", "USDTRY", "USDZAR", "ZARJPY", "CADEUR"]
+
+# Path to the PycharmProjects directory
+pycharm_projects_folder = os.path.join(os.path.expanduser("~"), "PycharmProjects")
+output_file = os.path.join(pycharm_projects_folder, "pip_column_data.csv")
+
+# Start timing the script
+start_run_time = time.time()
+
+try:
+    # Create a SQLAlchemy engine
+    engine = create_engine(f'mysql+mysqlconnector://{user}:{password}@{host}:{port}/{dbname}')
+    print("Fetching trades data...")
+
+    # Step 1: Fetch data from trades table based on the time range
+    trades_query = f"""
+    SELECT id, open_time, close_time, symbol, open_price, close_price, login, volume
+    FROM trades 
+    WHERE open_time BETWEEN UNIX_TIMESTAMP('{start_time}') AND UNIX_TIMESTAMP('{end_time}')
+    OR close_time BETWEEN UNIX_TIMESTAMP('{start_time}') AND UNIX_TIMESTAMP('{end_time}');
+    """
+    trades_df = pd.read_sql(trades_query, engine)
+    print(f"Fetched {len(trades_df)} trades.")
+
+    if trades_df.empty:
+        print("No data found in the trades table for the given time range.")
+    else:
+        # Convert the Unix timestamps to datetime
+        trades_df['open_time'] = pd.to_datetime(trades_df['open_time'], unit='s')
+        trades_df['close_time'] = pd.to_datetime(trades_df['close_time'], unit='s')
+
+        # Calculate 'trade_duration' in hours
+        trades_df['trade_duration'] = (trades_df['close_time'] - trades_df['open_time']).dt.total_seconds() / 3600
+        trades_df['trade_duration'] = trades_df['trade_duration'].round(2)
+
+        # Add the symbol_type column based on asset class lists
+        trades_df['symbol_type'] = trades_df['symbol'].apply(
+            lambda x: 'crypto' if x in crypto_list else
+            'commodities' if x in commodities_list else
+            'indices' if x in indices_list else
+            'forex' if x in forex_list else
+            'other'
+        )
+
+        # Calculate the FinalLot column
+        trades_df['FinalLot'] = trades_df.apply(
+            lambda row: row['volume'] / 1000 if str(row['login']).startswith(('300', '700')) else row['volume'] / 100,
+            axis=1
+        )
+
+        # Calculate 'Pips' as 'open_price' - 'close_price' with specific logic for each symbol type
+        def calculate_pips(row):
+            if row['symbol_type'] == 'forex':
+                if 'JPY' in row['symbol']:  # Handling JPY pairs
+                    return abs((row['open_price'] - row['close_price']) * 100)
+                else:
+                    return abs((row['open_price'] - row['close_price']) * 10000)
+            elif row['symbol_type'] == 'indices':
+                return abs(row['open_price'] - row['close_price'])
+            elif row['symbol_type'] == 'commodities':
+                return abs(row['open_price'] - row['close_price'])
+            elif row['symbol_type'] == 'crypto':
+                return abs(row['open_price'] - row['close_price'])
+            else:
+                return 0
+
+        trades_df['Pips'] = trades_df.apply(calculate_pips, axis=1)
+
+        # Display the first few rows of the resulting DataFrame before saving
+        print("Preview of the data:")
+        print(trades_df[['symbol', 'open_price', 'close_price', 'symbol_type', 'Pips', 'trade_duration']].head())
+
+        # Save the data to CSV
+        print("Saving data to CSV...")
+        trades_df.to_csv(output_file, index=False)
+        print(f"Data successfully saved to {output_file}")
+
+except Exception as e:
+    print(f"Error: {e}")
+
+finally:
+    # Ensure the engine is disposed of if it was created
+    try:
+        engine.dispose()
+    except NameError:
+        print("Engine was not created, no need to dispose.")
+
+# End timing the script
+end_run_time = time.time()
+
+# Calculate and print the runtime
+runtime = end_run_time - start_run_time
+print(f"Script runtime: {runtime:.2f} seconds")
