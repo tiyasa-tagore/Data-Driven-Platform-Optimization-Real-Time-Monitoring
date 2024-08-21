@@ -1,0 +1,20 @@
+import pandas as pd
+
+# Load the CSV file
+file_path = r'C:\Users\tiyasa\PycharmProjects\16.csv'
+data = pd.read_csv(file_path)
+
+# Filter rows where profit is positive
+positive_profit_data = data[data['profit'] > 0]
+
+# Group by country and sum the positive profits
+country_profit_summary = positive_profit_data.groupby('country_name')['profit'].sum()
+
+# Sort the countries by the summed positive profit in descending order
+sorted_countries = country_profit_summary.sort_values(ascending=False)
+
+# Save the result to a new CSV file
+output_path = r'C:\Users\tiyasa\PycharmProjects\all_countries_sorted_profit.csv'
+sorted_countries.to_csv(output_path, header=['Summarized Positive Profit'])
+
+print(f"All countries sorted by summarized positive profit have been saved to: {output_path}")
