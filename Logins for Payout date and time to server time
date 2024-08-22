@@ -1,0 +1,33 @@
+library(dplyr)
+library(lubridate)
+library(readr)
+
+# Load the CSV file
+data <- read_csv("Logins.csv")
+
+# Function to subtract 3 hours
+adjust_time <- function(datetime_str) {
+  # Parse the datetime string without considering the timezone
+  dt <- ymd_hms(gsub("T", " ", datetime_str))  # Replace 'T' with space to parse correctly
+  
+  # Subtract 3 hours
+  adjusted_dt <- dt + hours(3)
+  
+  # Return the adjusted datetime in the desired format
+  return(format(adjusted_dt, "%Y-%m-%d "))
+}
+
+# Apply the function to the created_at column
+data <- data %>%
+  mutate(created_at_date = sapply(created_at, adjust_time))
+
+# Select relevant columns for the new DataFrame
+new_data <- data %>%
+  select(login, created_at, created_at_date, ending_at, Cycle_PnL, Starting_balance)
+
+# Save the modified DataFrame to a new CSV file
+write_csv(new_data, "Modified_Logins.csv")
+
+
+# Display the modified DataFrame
+print(new_data)
