@@ -1,0 +1,396 @@
+import pandas as pd
+from sqlalchemy import create_engine
+import os
+import time
+
+# Database connection details
+dbname = "api_backend"
+user = "readonly_user"
+password = "password123"
+host = "fundednext-production.cqtlpb5sm2vt.ap-northeast-1.rds.amazonaws.com"
+port = 3306
+
+# File paths
+uploaded_csv_file = r"C:\Users\tiyasa\PycharmProjects\Modified_Logins.csv"
+pycharm_projects_folder = os.path.join(os.path.expanduser("~"), "PycharmProjects")
+output_file = os.path.join(pycharm_projects_folder, "new_filtered_trades.csv")
+
+# Asset class lists
+crypto_list = ["ADAUSD", "BCHUSD", "BTCUSD", "DOGUSD", "ETHUSD", "LNKUSD", "LTCUSD", "XLMUSD", "XMRUSD", "XRPUSD"]
+commodities_list = ["UKOUSD", "USOUSD", "XAUUSD", "XAGUSD", "XPTUSD"]
+indices_list = ["AUS200", "HK50", "EUSTX50", "FRA40", "GER30", "NTH25", "SWI20", "AUDUSD", "SPX500", "UK100", "US30",
+                "JP225", "US2000", "NDX100"]
+forex_list = ["AUDCAD", "AUDCHF", "AUDJPY", "AUDNZD", "AUDSGD", "AUDUSD", "CADCHF", "CADJPY", "CHFJPY", "EURAUD",
+              "EURCAD", "EURCHF", "EURGBP", "EURHKD",
+              "EURHUF", "EURJPY", "EURNOK", "EURNZD", "EURSGD", "EURTRY", "EURUSD", "GBPAUD", "GBPCAD", "GBPCHF",
+              "GBPJPY", "GBPNZD", "GBPSGD", "GBPUSD",
+              "MXNJPY", "NOKJPY", "NZDCAD", "NZDCHF", "NZDJPY", "NZDSGD", "NZDUSD", "SGDJPY", "USDCAD", "USDCHF",
+              "USDCNH", "USDDKK", "USDHKD", "USDHUF",
+              "USDJPY", "USDMXN", "USDNOK", "USDPLN", "USDSEK", "USDSGD", "USDTRY", "USDZAR", "ZARJPY", "CADEUR"]
+
+# Pip value dictionary
+pip_values = {
+    "AUDCAD": 7.24, "AUDJPY": 6.59, "AUDNZD": 5.89, "AUDSGD": 7.35, "AUDUSD": 10.0, "CADCHF": 11.09, "CADJPY": 6.59,
+    "CADSGD": 7.35, "CHFJPY": 6.59, "EURAUD": 6.38, "EURCAD": 7.24, "EURCHF": 11.09, "EURGBP": 12.25, "EURHKD": 1.28,
+    "EURHUF": 2.84, "EURJPY": 6.61, "EURNOK": 0.90, "EURNZD": 5.90, "EURSGD": 7.36, "EURTRY": 0.35, "EURUSD": 10.0,
+    "GBPAUD": 6.36, "GBPCAD": 7.23, "GBPCHF": 11.09, "GBPJPY": 6.61, "GBPNZD": 5.90, "GBPSGD": 7.36, "GBPUSD": 10.0,
+    "MXNJPY": 6.61, "NOKJPY": 6.60, "NZDCAD": 7.23, "NZDCHF": 11.09, "NZDJPY": 6.61, "NZDSGD": 7.36, "SGDJPY": 6.61,
+    "USDCAD": 7.23, "USDCHF": 11.09, "USDCNH": 1.37, "USDDKK": 1.43, "USDHUF": 2.83, "USDJPY": 6.61, "USDMXN": 0.56,
+    "USDNOK": 0.90, "USDPLN": 2.42, "USDSGD": 7.36, "USDTRY": 0.35, "USDZAR": 0.53, "ZARJPY": 6.61, "USDHKD": 1.28,
+    "SPX500": 10.0, "US30": 10.0, "GER30": 10.67, "US2000": 10.0, "UK100": 12.20, "VIX": 10.0, "SWI20": 11.08,
+    "NTH25": 21.34, "NDX100": 10.0, "JP225": 0.07, "HK50": 1.28, "FRA40": 10.67, "EUSTX50": 10.67, "AUS200": 6.35,
+    "XAUUSD": 10.0, "XPTUSD": 10.0, "XAGUSD": 50.0, "USOUSD": 1.0, "UKOUSD": 1.0, "ADAUSD": 0.10, "BCHUSD": 0.01,
+    "BTCUSD": 0.10, "DOGUSD": 0.10, "ETHUSD": 0.10, "LNKUSD": 1.0, "LTCUSD": 0.10, "XLMUSD": 0.01, "XMRUSD": 0.10,
+    "XRPUSD": 0.10, "AUDCHF": 11.09
+}
+
+# Leverage mapping and contract size mapping
+leverage_mapping = {
+    'Stellar 1-Step': {
+        'ADAUSD': 2, 'BCHUSD': 2, 'BTCUSD': 2, 'DOGUSD': 2, 'ETHUSD': 2,
+        'LNKUSD': 2, 'LTCUSD': 2, 'XLMUSD': 2, 'XMRUSD': 2, 'XRPUSD': 2,
+        'AUDCAD': 30, 'AUDJPY': 30, 'AUDNZD': 30, 'AUDSGD': 30, 'AUDUSD': 30,
+        'CADCHF': 30, 'CADJPY': 30, 'CHFJPY': 30, 'EURAUD': 30, 'EURCAD': 30,
+        'EURCHF': 30, 'EURGBP': 30, 'EURHKD': 30, 'EURHUF': 30, 'EURJPY': 30,
+        'EURNOK': 30, 'EURNZD': 30, 'EURSGD': 30, 'EURTRY': 30, 'EURUSD': 30,
+        'GBPAUD': 30, 'GBPCAD': 30, 'GBPCHF': 30, 'GBPJPY': 30, 'GBPNZD': 30,
+        'GBPSGD': 30, 'GBPUSD': 30, 'MXNJPY': 30, 'NOKJPY': 30, 'NZDCAD': 30,
+        'NZDCHF': 30, 'NZDJPY': 30, 'NZDSGD': 30, 'NZDUSD': 30, 'SGDJPY': 30,
+        'USDCAD': 30, 'USDCHF': 30, 'USDCNH': 30, 'USDDKK': 30, 'USDHUF': 30,
+        'USDJPY': 30, 'USDMXN': 30, 'USDNOK': 30, 'USDPLN': 30, 'USDSGD': 30,
+        'USDTRY': 30, 'USDZAR': 30, 'ZARJPY': 30, 'USDHKD': 30, 'AUDCHF': 30,
+        'NDX100': 5, 'SPX500': 5, 'US30': 5, 'GER30': 5, 'US2000': 5,
+        'UK100': 5, 'VIX': 5, 'SWI20': 5, 'NTH25': 5, 'JP225': 5,
+        'HK50': 5, 'FRA40': 5, 'EUSTX50': 5, 'AUS200': 5, 'XAUUSD': 10,
+        'XPTUSD': 10, 'XAGUSD': 10, 'USOUSD': 10, 'UKOUSD': 10
+    },
+    'Stellar 2-Step': {
+        'ADAUSD': 2, 'BCHUSD': 2, 'BTCUSD': 2, 'DOGUSD': 2, 'ETHUSD': 2,
+        'LNKUSD': 2, 'LTCUSD': 2, 'XLMUSD': 2, 'XMRUSD': 2, 'XRPUSD': 2,
+        'AUDCAD': 100, 'AUDJPY': 100, 'AUDNZD': 100, 'AUDSGD': 100, 'AUDUSD': 100,
+        'CADCHF': 100, 'CADJPY': 100, 'CHFJPY': 100, 'EURAUD': 100, 'EURCAD': 100,
+        'EURCHF': 100, 'EURGBP': 100, 'EURHKD': 100, 'EURHUF': 100, 'EURJPY': 100,
+        'EURNOK': 100, 'EURNZD': 100, 'EURSGD': 100, 'EURTRY': 100, 'EURUSD': 100,
+        'GBPAUD': 100, 'GBPCAD': 100, 'GBPCHF': 100, 'GBPJPY': 100, 'GBPNZD': 100,
+        'GBPSGD': 100, 'GBPUSD': 100, 'MXNJPY': 100, 'NOKJPY': 100, 'NZDCAD': 100,
+        'NZDCHF': 100, 'NZDJPY': 100, 'NZDSGD': 100, 'NZDUSD': 100, 'SGDJPY': 100,
+        'USDCAD': 100, 'USDCHF': 100, 'USDCNH': 100, 'USDDKK': 100, 'USDHUF': 100,
+        'USDJPY': 100, 'USDMXN': 100, 'USDNOK': 100, 'USDPLN': 100, 'USDSGD': 100,
+        'USDTRY': 100, 'USDZAR': 100, 'ZARJPY': 100, 'USDHKD': 100, 'AUDCHF': 100,
+        'NDX100': 20, 'SPX500': 20, 'US30': 20, 'GER30': 20, 'US2000': 20,
+        'UK100': 20, 'VIX': 20, 'SWI20': 20, 'NTH25': 20, 'JP225': 20,
+        'HK50': 20, 'FRA40': 20, 'EUSTX50': 20, 'AUS200': 20, 'XAUUSD': 40,
+        'XPTUSD': 40, 'XAGUSD': 40, 'USOUSD': 40, 'UKOUSD': 40
+    },
+    'Stellar Lite': {
+        'ADAUSD': 2, 'BCHUSD': 2, 'BTCUSD': 2, 'DOGUSD': 2, 'ETHUSD': 2,
+        'LNKUSD': 2, 'LTCUSD': 2, 'XLMUSD': 2, 'XMRUSD': 2, 'XRPUSD': 2,
+        'AUDCAD': 100, 'AUDJPY': 100, 'AUDNZD': 100, 'AUDSGD': 100, 'AUDUSD': 100,
+        'CADCHF': 100, 'CADJPY': 100, 'CHFJPY': 100, 'EURAUD': 100, 'EURCAD': 100,
+        'EURCHF': 100, 'EURGBP': 100, 'EURHKD': 100, 'EURHUF': 100, 'EURJPY': 100,
+        'EURNOK': 100, 'EURNZD': 100, 'EURSGD': 100, 'EURTRY': 100, 'EURUSD': 100,
+        'GBPAUD': 100, 'GBPCAD': 100, 'GBPCHF': 100, 'GBPJPY': 100, 'GBPNZD': 100,
+        'GBPSGD': 100, 'GBPUSD': 100, 'MXNJPY': 100, 'NOKJPY': 100, 'NZDCAD': 100,
+        'NZDCHF': 100, 'NZDJPY': 100, 'NZDSGD': 100, 'NZDUSD': 100, 'SGDJPY': 100,
+        'USDCAD': 100, 'USDCHF': 100, 'USDCNH': 100, 'USDDKK': 100, 'USDHUF': 100,
+        'USDJPY': 100, 'USDMXN': 100, 'USDNOK': 100, 'USDPLN': 100, 'USDSGD': 100,
+        'USDTRY': 100, 'USDZAR': 100, 'ZARJPY': 100, 'USDHKD': 100, 'AUDCHF': 100,
+        'NDX100': 15, 'SPX500': 15, 'US30': 15, 'GER30': 15, 'US2000': 15,
+        'UK100': 15, 'VIX': 15, 'SWI20': 15, 'NTH25': 15, 'JP225': 15,
+        'HK50': 15, 'FRA40': 15, 'EUSTX50': 15, 'AUS200': 15, 'XAUUSD': 25,
+        'XPTUSD': 25, 'XAGUSD': 25, 'USOUSD': 25, 'UKOUSD': 25
+    },
+    'Evaluation': {
+        'ADAUSD': 2, 'BCHUSD': 2, 'BTCUSD': 2, 'DOGUSD': 2, 'ETHUSD': 2,
+        'LNKUSD': 2, 'LTCUSD': 2, 'XLMUSD': 2, 'XMRUSD': 2, 'XRPUSD': 2,
+        'AUDCAD': 100, 'AUDJPY': 100, 'AUDNZD': 100, 'AUDSGD': 100, 'AUDUSD': 100,
+        'CADCHF': 100, 'CADJPY': 100, 'CHFJPY': 100, 'EURAUD': 100, 'EURCAD': 100,
+        'EURCHF': 100, 'EURGBP': 100, 'EURHKD': 100, 'EURHUF': 100, 'EURJPY': 100,
+        'EURNOK': 100, 'EURNZD': 100, 'EURSGD': 100, 'EURTRY': 100, 'EURUSD': 100,
+        'GBPAUD': 100, 'GBPCAD': 100, 'GBPCHF': 100, 'GBPJPY': 100, 'GBPNZD': 100,
+        'GBPSGD': 100, 'GBPUSD': 100, 'MXNJPY': 100, 'NOKJPY': 100, 'NZDCAD': 100,
+        'NZDCHF': 100, 'NZDJPY': 100, 'NZDSGD': 100, 'NZDUSD': 100, 'SGDJPY': 100,
+        'USDCAD': 100, 'USDCHF': 100, 'USDCNH': 100, 'USDDKK': 100, 'USDHUF': 100,
+        'USDJPY': 100, 'USDMXN': 100, 'USDNOK': 100, 'USDPLN': 100, 'USDSGD': 100,
+        'USDTRY': 100, 'USDZAR': 100, 'ZARJPY': 100, 'USDHKD': 100, 'AUDCHF': 100,
+        'NDX100': 50, 'SPX500': 50, 'US30': 50, 'GER30': 50, 'US2000': 50,
+        'UK100': 50, 'VIX': 50, 'SWI20': 50, 'NTH25': 50, 'JP225': 50,
+        'HK50': 50, 'FRA40': 50, 'EUSTX50': 50, 'AUS200': 50, 'XAUUSD': 50,
+        'XPTUSD': 50, 'XAGUSD': 50, 'USOUSD': 50, 'UKOUSD': 50
+    },
+    'Express': {
+        'ADAUSD': 2, 'BCHUSD': 2, 'BTCUSD': 2, 'DOGUSD': 2, 'ETHUSD': 2,
+        'LNKUSD': 2, 'LTCUSD': 2, 'XLMUSD': 2, 'XMRUSD': 2, 'XRPUSD': 2,
+        'AUDCAD': 100, 'AUDJPY': 100, 'AUDNZD': 100, 'AUDSGD': 100, 'AUDUSD': 100,
+        'CADCHF': 100, 'CADJPY': 100, 'CHFJPY': 100, 'EURAUD': 100, 'EURCAD': 100,
+        'EURCHF': 100, 'EURGBP': 100, 'EURHKD': 100, 'EURHUF': 100, 'EURJPY': 100,
+        'EURNOK': 100, 'EURNZD': 100, 'EURSGD': 100, 'EURTRY': 100, 'EURUSD': 100,
+        'GBPAUD': 100, 'GBPCAD': 100, 'GBPCHF': 100, 'GBPJPY': 100, 'GBPNZD': 100,
+        'GBPSGD': 100, 'GBPUSD': 100, 'MXNJPY': 100, 'NOKJPY': 100, 'NZDCAD': 100,
+        'NZDCHF': 100, 'NZDJPY': 100, 'NZDSGD': 100, 'NZDUSD': 100, 'SGDJPY': 100,
+        'USDCAD': 100, 'USDCHF': 100, 'USDCNH': 100, 'USDDKK': 100, 'USDHUF': 100,
+        'USDJPY': 100, 'USDMXN': 100, 'USDNOK': 100, 'USDPLN': 100, 'USDSGD': 100,
+        'USDTRY': 100, 'USDZAR': 100, 'ZARJPY': 100, 'USDHKD': 100, 'AUDCHF': 100,
+        'NDX100': 50, 'SPX500': 50, 'US30': 50, 'GER30': 50, 'US2000': 50,
+        'UK100': 50, 'VIX': 50, 'SWI20': 50, 'NTH25': 50, 'JP225': 50,
+        'HK50': 50, 'FRA40': 50, 'EUSTX50': 50, 'AUS200': 50, 'XAUUSD': 50,
+        'XPTUSD': 50, 'XAGUSD': 50, 'USOUSD': 50, 'UKOUSD': 50
+    }
+}
+
+contract_size_mapping = {
+    'ADAUSD': 100, 'BCHUSD': 1, 'BTCUSD': 1, 'DOGUSD': 1000, 'ETHUSD': 1,
+    'LNKUSD': 100, 'LTCUSD': 1, 'XLMUSD': 100, 'XMRUSD': 1, 'XRPUSD': 100,
+    'AUDCAD': 100000, 'AUDJPY': 100000, 'AUDNZD': 100000, 'AUDSGD': 100000, 'AUDUSD': 100000,
+    'CADCHF': 100000, 'CADJPY': 100000, 'CHFJPY': 100000, 'EURAUD': 100000, 'EURCAD': 100000,
+    'EURCHF': 100000, 'EURGBP': 100000, 'EURHKD': 100000, 'EURHUF': 100000, 'EURJPY': 100000,
+    'EURNOK': 100000, 'EURNZD': 100000, 'EURSGD': 100000, 'EURTRY': 100000, 'EURUSD': 100000,
+    'GBPAUD': 100000, 'GBPCAD': 100000, 'GBPCHF': 100000, 'GBPJPY': 100000, 'GBPNZD': 100000,
+    'GBPSGD': 100000, 'GBPUSD': 100000, 'MXNJPY': 100000, 'NOKJPY': 100000, 'NZDCAD': 100000,
+    'NZDCHF': 100000, 'NZDJPY': 100000, 'NZDSGD': 100000, 'NZDUSD': 100000, 'SGDJPY': 100000,
+    'USDCAD': 100000, 'USDCHF': 100000, 'USDCNH': 100000, 'USDDKK': 100000, 'USDHUF': 100000,
+    'USDJPY': 100000, 'USDMXN': 100000, 'USDNOK': 100000, 'USDPLN': 100000, 'USDSGD': 100000,
+    'USDTRY': 100000, 'USDZAR': 100000, 'ZARJPY': 100000, 'USDHKD': 100000, 'AUDCHF': 100000,
+    'NDX100': 10, 'SPX500': 10, 'US30': 10, 'GER30': 10, 'US2000': 10,
+    'UK100': 10, 'VIX': 10, 'SWI20': 10, 'NTH25': 10, 'JP225': 10,
+    'HK50': 10, 'FRA40': 10, 'EUSTX50': 10, 'AUS200': 10, 'XAUUSD': 100,
+    'XPTUSD': 100, 'XAGUSD': 5000, 'USOUSD': 100, 'UKOUSD': 100
+}
+
+# Start timing the script
+start_run_time = time.time()
+
+try:
+    # Step 1: Read the uploaded CSV file
+    logins_df = pd.read_csv(uploaded_csv_file)
+
+    # Convert the date columns in the CSV to Unix timestamps (seconds since the epoch)
+    logins_df['created_at_date'] = pd.to_datetime(logins_df['created_at_date'], format='%m/%d/%Y').dt.floor('d').astype(int) / 10**9
+    logins_df['ending_at'] = pd.to_datetime(logins_df['ending_at'], format='%m/%d/%Y %H:%M').astype(int) / 10**9
+
+    # Extract unique login values
+    login_values = tuple(logins_df['login'].unique())
+
+    # Create a SQLAlchemy engine
+    engine = create_engine(f'mysql+mysqlconnector://{user}:{password}@{host}:{port}/{dbname}')
+    print("Fetching trades data...")
+
+    # Step 2: Fetch data from trades table based on login values and time ranges
+    trades_df_list = []
+
+    for _, row in logins_df.iterrows():
+        trades_query = f"""
+        SELECT id, open_time, close_time, symbol, open_price, close_price, login, volume, close_time_str, commission, 
+               digits, open_time_str, profit, reason, sl, swap, ticket, tp, type_str
+        FROM trades 
+        WHERE login = {row['login']} AND (
+            (open_time >= {row['created_at_date']} AND open_time <= {row['ending_at']})
+            OR (close_time >= {row['created_at_date']} AND close_time <= {row['ending_at']})
+            OR (open_time <= {row['created_at_date']} AND close_time >= {row['ending_at']})
+        );
+        """
+        trades_df = pd.read_sql(trades_query, engine)
+        trades_df_list.append(trades_df)
+
+    if trades_df_list:
+        trades_df = pd.concat(trades_df_list)
+        print(f"Fetched {len(trades_df)} trades.")
+
+        if trades_df.empty:
+            print("No data found in the trades table for the given logins and time ranges.")
+        else:
+            # Filter out rows where the login starts with '30' or '70'
+            trades_df = trades_df[~trades_df['login'].astype(str).str.startswith(('30', '70'))]
+            print(f"Filtered trades, remaining {len(trades_df)} trades.")
+
+            print("Fetching accounts data...")
+            login_ids = tuple(int(x) for x in trades_df['login'].unique())
+            accounts_query = f"""
+            SELECT id AS account_id, login, type AS type_account, equity, breachedby, customer_id FROM accounts 
+            WHERE login IN {login_ids};
+            """
+            accounts_df = pd.read_sql(accounts_query, engine)
+            print(f"Fetched {len(accounts_df)} accounts.")
+
+            combined_df = pd.merge(trades_df, accounts_df, on='login', suffixes=('_trade', '_account'))
+
+            print("Fetching customers data...")
+            customer_ids = tuple(int(x) for x in combined_df['customer_id'].unique())
+            customers_query = f"""
+            SELECT id AS customer_id, email, country_id FROM customers 
+            WHERE id IN {customer_ids};
+            """
+            customers_df = pd.read_sql(customers_query, engine)
+            print(f"Fetched {len(customers_df)} customers.")
+
+            combined_df = pd.merge(combined_df, customers_df, on='customer_id', suffixes=('', '_customer'))
+
+            print("Fetching country names...")
+            country_ids = tuple(int(x) for x in customers_df['country_id'].unique())
+            countries_query = f"""
+            SELECT id AS country_id, name AS country_name FROM countries 
+            WHERE id IN {country_ids};
+            """
+            countries_df = pd.read_sql(countries_query, engine)
+            print(f"Fetched {len(countries_df)} countries.")
+
+            # Merge combined data with countries data on country_id
+            final_df = pd.merge(combined_df, countries_df, on='country_id', suffixes=('', '_country'))
+
+            # Drop unwanted columns that exist in the DataFrame
+            columns_to_drop = ['account_id', 'created_at', 'updated_at', 'deleted_at', 'customer_id', 'country_id']
+            final_df = final_df.drop(columns=[col for col in columns_to_drop if col in final_df.columns])
+
+            # Add the symbol_type column based on asset class lists
+            final_df['symbol_type'] = final_df['symbol'].apply(
+                lambda x: 'crypto' if x in crypto_list else
+                'commodities' if x in commodities_list else
+                'indices' if x in indices_list else
+                'forex' if x in forex_list else
+                'other'
+            )
+
+            # Calculate the FinalLot column
+            final_df['FinalLot'] = final_df['volume'] / 100  # Simplified since rows with login starting with '300' or '700' are excluded
+
+            # Calculate 'Pips' as 'open_price' - 'close_price' with specific logic for each symbol type
+            def calculate_pips(row):
+                if row['symbol_type'] == 'forex':
+                    if row['symbol'].endswith('JPY') or row['symbol'] in ['XAUUSD', 'XAGUSD']:
+                        return abs((row['open_price'] - row['close_price']) * 100)
+                    else:
+                        return abs((row['open_price'] - row['close_price']) * 10000)
+                elif row['symbol_type'] == 'indices':
+                    return abs(row['open_price'] - row['close_price'])
+                elif row['symbol_type'] == 'commodities':
+                    return abs(row['open_price'] - row['close_price'])
+                elif row['symbol_type'] == 'crypto':
+                    return abs(row['open_price'] - row['close_price'])
+                else:
+                    return 0
+
+            final_df['Pips'] = final_df.apply(calculate_pips, axis=1)
+
+            # Calculate 'SL_Pips' as 'open_price' - 'sl' with specific logic for each symbol type
+            def calculate_sl_pips(row):
+                if pd.isna(row['sl']) or row['sl'] == 0:  # If SL is NaN or 0, return None for SL_Pips
+                    return None
+                if row['symbol_type'] == 'forex':
+                    if row['symbol'].endswith('JPY') or row['symbol'] in ['XAUUSD', 'XAGUSD']:
+                        return abs((row['open_price'] - row['sl']) * 100)
+                    else:
+                        return abs((row['open_price'] - row['sl']) * 10000)
+                elif row['symbol_type'] == 'indices':
+                    return abs(row['open_price'] - row['sl'])
+                elif row['symbol_type'] == 'commodities':
+                    return abs(row['open_price'] - row['sl'])
+                elif row['symbol_type'] == 'crypto':
+                    return abs(row['open_price'] - row['sl'])
+                else:
+                    return 0
+
+            final_df['SL_Pips'] = final_df.apply(calculate_sl_pips, axis=1)
+
+            # Calculate 'trade_duration' in hours
+            final_df['trade_duration'] = (final_df['close_time'] - final_df['open_time']) / 3600
+            final_df['trade_duration'] = final_df['trade_duration'].round(2)
+
+            # Calculate the 'Session' based on time ranges
+            def determine_session(time_str):
+                time_obj = pd.to_datetime(time_str).time()
+                if time_obj >= pd.to_datetime('00:15').time() and time_obj <= pd.to_datetime('02:44').time():
+                    return 'Market-Open Session'
+                elif time_obj >= pd.to_datetime('02:45').time() and time_obj <= pd.to_datetime('08:59').time():
+                    return 'Prime Asia Session'
+                elif time_obj >= pd.to_datetime('09:00').time() and time_obj <= pd.to_datetime('09:59').time():
+                    return 'Pre London Session'
+                elif time_obj >= pd.to_datetime('10:00').time() and time_obj <= pd.to_datetime('10:04').time():
+                    return 'London Opening Session'
+                elif time_obj >= pd.to_datetime('10:05').time() and time_obj <= pd.to_datetime('13:59').time():
+                    return 'London Session'
+                elif time_obj >= pd.to_datetime('14:00').time() and time_obj <= pd.to_datetime('14:59').time():
+                    return 'Pre-NY Session'
+                elif time_obj >= pd.to_datetime('15:00').time() and time_obj <= pd.to_datetime('15:04').time():
+                    return 'NY-Open Session'
+                elif time_obj >= pd.to_datetime('15:05').time() and time_obj <= pd.to_datetime('16:29').time():
+                    return 'Pre-NYSE Session'
+                elif time_obj >= pd.to_datetime('16:30').time() and time_obj <= pd.to_datetime('16:35').time():
+                    return 'NYSE-Open Session'
+                elif time_obj >= pd.to_datetime('16:36').time() and time_obj <= pd.to_datetime('21:00').time():
+                    return 'NY Session'
+                elif time_obj >= pd.to_datetime('21:01').time() and time_obj <= pd.to_datetime('22:59').time():
+                    return 'Late Trading Hours Session'
+                elif time_obj >= pd.to_datetime('23:00').time() and time_obj <= pd.to_datetime('23:59').time():
+                    return 'Market-Closing Session'
+                else:
+                    return 'Unknown Session'
+
+            # Apply the session determination for open_time_str
+            final_df['Session'] = final_df['open_time_str'].apply(determine_session)
+
+            # Calculate 'RRR' (Risk to Reward Ratio) only if profit > 0 and both Pips and SL_Pips are valid numbers
+            def calculate_rrr(row):
+                if row['profit'] <= 0 or row['Pips'] == 0 or pd.isna(row['Pips']) or pd.isna(row['SL_Pips']) or row['SL_Pips'] == 0:
+                    return None
+                ratio = row['SL_Pips'] / row['Pips']
+                return f"1:{round(ratio, 2)}"
+
+            final_df['RRR'] = final_df.apply(calculate_rrr, axis=1)
+
+            # Calculate 'Risk_Per_Trade'
+            def calculate_risk_per_trade(row):
+                if pd.isna(row['SL_Pips']):  # If SL_Pips is NaN, return None for Risk_Per_Trade
+                    return None
+                pip_value = pip_values.get(row['symbol'], 0)
+                return row['SL_Pips'] * row['FinalLot'] * pip_value
+
+            final_df['Risk_Per_Trade'] = final_df.apply(calculate_risk_per_trade, axis=1)
+
+            # Extract the account type key for leverage mapping
+            def extract_account_type(account_type):
+                account_type_parts = account_type.split()
+                if account_type_parts[0] in ['Evaluation', 'Express']:
+                    return account_type_parts[0]
+                return " ".join(account_type_parts[:2])
+
+            # Calculate 'Margin_Utilization'
+            def calculate_margin_utilization(row):
+                account_type_key = extract_account_type(row['type_account'])
+                leverage = leverage_mapping.get(account_type_key, {}).get(row['symbol'], None)
+                contract_size = contract_size_mapping.get(row['symbol'], None)
+                if leverage and contract_size:
+                    return (row['open_price'] * contract_size * row['FinalLot']) / leverage
+                else:
+                    return None
+
+            final_df['Margin_Utilization'] = final_df.apply(calculate_margin_utilization, axis=1)
+
+            # Display the first few rows of the resulting DataFrame before saving
+            print("Preview of the data:")
+            print(final_df[['symbol', 'open_price', 'close_price', 'symbol_type', 'Pips', 'SL_Pips', 'trade_duration', 'Session', 'RRR', 'Risk_Per_Trade', 'Margin_Utilization']].head())
+
+            # Save the data to CSV
+            print("Saving data to CSV...")
+            final_df.to_csv(output_file, index=False)
+            print(f"Data successfully saved to {output_file}")
+
+    else:
+        print("No trades data fetched.")
+
+except Exception as e:
+    print(f"Error: {e}")
+
+finally:
+    # Ensure the engine is disposed of if it was created
+    try:
+        engine.dispose()
+    except NameError:
+        print("Engine was not created, no need to dispose.")
+
+# End timing the script
+end_run_time = time.time()
+
+# Calculate and print the runtime
+runtime = end_run_time - start_run_time
+print(f"Script runtime: {runtime:.2f} seconds")
+
