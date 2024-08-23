@@ -1,0 +1,36 @@
+import pandas as pd
+
+# Load the provided CSV file
+file_path = r"C:\Users\tiyasa\PycharmProjects\new_filtered_trades.csv"
+df = pd.read_csv(file_path)
+
+# Filter the DataFrame to only include positive profits
+positive_profit_df = df[df['profit'] > 0]
+
+# Group by country and sum the profit for each country
+country_profit_summation = positive_profit_df.groupby('country_name')['profit'].sum()
+
+# Sort the summed profits in descending order and take the top 10 countries
+top_10_countries_profit = country_profit_summation.sort_values(ascending=False).head(10)
+
+# Extract the names of the top 10 countries
+top_10_countries = top_10_countries_profit.index.tolist()
+
+# Filter the DataFrame to include only trades from the top 10 countries
+top_10_countries_df = positive_profit_df[positive_profit_df['country_name'].isin(top_10_countries)]
+
+# Group by country and session, then sum the profit for each group
+country_session_profit_summation = top_10_countries_df.groupby(['country_name', 'Session'])['profit'].sum()
+
+# Sort the summed profits in descending order within each country
+country_session_profit_summation = country_session_profit_summation.sort_values(ascending=False)
+
+# Convert the result to a DataFrame for saving and displaying
+country_session_profit_df = country_session_profit_summation.reset_index()
+
+# Display the result before saving
+print(country_session_profit_df)
+
+# Save the result to a new CSV file
+output_file_path = r"C:\Users\tiyasa\PycharmProjects\top_10_countries_session_profit.csv"
+country_session_profit_df.to_csv(output_file_path, index=False)
