@@ -1,0 +1,90 @@
+import pandas as pd
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# Load the provided CSV file
+file_path = r"C:\Users\tiyasa\PycharmProjects\new_filtered_trades.csv"
+df = pd.read_csv(file_path)
+
+# Filter the DataFrame to only include positive profits
+positive_profit_df = df[df['profit'] > 0]
+
+# Group by country and sum the profit for each country
+country_profit_summation = positive_profit_df.groupby('country_name')['profit'].sum()
+
+# Sort the summed profits in descending order and take the top 10 countries
+top_10_countries_profit = country_profit_summation.sort_values(ascending=False).head(10)
+
+# Extract the names of the top 10 countries
+top_10_countries = top_10_countries_profit.index.tolist()
+
+# Filter the DataFrame to include only trades from the top 10 countries
+top_10_countries_df = positive_profit_df[positive_profit_df['country_name'].isin(top_10_countries)]
+
+# Group by country, session, and symbol, then count the occurrences and sum the profit for each group
+country_session_symbol_profit = top_10_countries_df.groupby(['country_name', 'Session', 'symbol']).agg(
+    profit_count=('profit', 'size'),
+    total_profit=('profit', 'sum')
+).reset_index()
+
+# Sort the entire DataFrame by country, session, and total profit in descending order
+country_session_symbol_profit = country_session_symbol_profit.sort_values(
+    by=['country_name', 'Session', 'total_profit', 'profit_count'],
+    ascending=[True, True, False, False]
+)
+
+# Get the top 3 symbols per country and session based on total profit
+top_3_symbols_per_session = country_session_symbol_profit.groupby(['country_name', 'Session']).head(3).reset_index(drop=True)
+
+# Sort the entire result by total profit in descending order for the final display
+top_3_symbols_per_session = top_3_symbols_per_session.sort_values(by='total_profit', ascending=False)
+
+# Now, for each symbol, find the two lots with the highest positive profit
+final_lot_selection = []
+for symbol in top_3_symbols_per_session['symbol'].unique():
+    symbol_data = top_10_countries_df[top_10_countries_df['symbol'] == symbol]
+    top_2_lots = symbol_data.groupby('FinalLot')['profit'].sum().nlargest(2).index
+    final_lot_selection.append({
+        'symbol': symbol,
+        'Top_Lots': list(top_2_lots)
+    })
+
+# Convert final_lot_selection to DataFrame for easier merging
+final_lot_df = pd.DataFrame(final_lot_selection)
+
+# Merge the top_3_symbols_per_session with the final lot data
+result_df = pd.merge(top_3_symbols_per_session, final_lot_df, on='symbol')
+
+# Display the result before saving
+print(result_df)
+
+# Save the result to a new CSV file
+output_file_path = r"C:\Users\tiyasa\PycharmProjects\top_10_countries_session_top_symbols_with_lots.csv"
+result_df.to_csv(output_file_path, index=False)
+
+# VISUALIZATION SECTION
+
+# Set the plot style
+sns.set(style="whitegrid")
+
+# Create a barplot showing total profit per symbol per session for each country
+plt.figure(figsize=(14, 8))
+sns.barplot(
+    data=result_df,
+    x='total_profit', y='symbol',
+    hue='Session', dodge=False
+)
+
+# Customize the plot
+plt.title('Top 3 Symbols by Session for Top 10 Countries (Total Profit)')
+plt.xlabel('Total Profit')
+plt.ylabel('Symbol')
+plt.legend(title='Session')
+plt.tight_layout()
+
+# Show the plot
+plt.show()
+
+# Save the plot to a file
+plot_output_path = r"C:\Users\tiyasa\PycharmProjects\top_10_countries_session_top_symbols_plot_with_lots.png"
+plt.savefig(plot_output_path)
