@@ -1,0 +1,120 @@
+import os
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import accuracy_score, classification_report
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# Paths to your files
+pycharm_projects_folder = os.path.join(os.path.expanduser("~"), "PycharmProjects")
+classified_data_file = os.path.join(pycharm_projects_folder, 'Classified_Data.csv')
+rule_file = os.path.join(pycharm_projects_folder, 'Funded Rule.csv')
+
+# Load the datasets
+classified_data = pd.read_csv(classified_data_file)
+funded_rule = pd.read_csv(rule_file)
+
+# Preprocessing classified data: Convert profit classification to binary (Profitable = 1, Non-profitable = 0)
+classified_data['Profit Classification'] = classified_data['Profit Classification'].apply(
+    lambda x: 1 if x == 'Profitable' else 0)
+
+# Feature selection: Choosing relevant columns for modeling
+X = classified_data[['Volume (lots)', 'Markup in pips']]  # Features
+y = classified_data['Profit Classification']  # Target
+
+# Split the dataset (70% train, 30% test)
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.30, random_state=42)
+
+# Step 1: Build a Random Forest Classifier with regularization (limiting depth to avoid overfitting)
+rf_classifier = RandomForestClassifier(n_estimators=100, max_depth=10, random_state=42)
+rf_classifier.fit(X_train, y_train)
+
+# Cross-validation to check for overfitting
+cross_val_scores = cross_val_score(rf_classifier, X_train, y_train, cv=5)
+print(f"Cross-validation scores: {cross_val_scores}")
+print(f"Average CV score: {np.mean(cross_val_scores):.2f}")
+
+# Predict on the test data
+y_pred = rf_classifier.predict(X_test)
+
+# Calculate accuracy and classification report
+accuracy = accuracy_score(y_test, y_pred)
+print(f"Test Set Accuracy: {accuracy:.2f}")
+print("\nClassification Report:\n", classification_report(y_test, y_pred))
+
+# Step 2: Build a Linear Regression model to predict TP broker profit
+lin_reg = LinearRegression()
+lin_reg.fit(X_train, classified_data.loc[X_train.index, 'TP broker profit'])
+
+# Predict on the test data for TP broker profit
+predicted_broker_profit = lin_reg.predict(X_test)
+
+# Analyze which rows could have been profitable by adjusting Min Markup
+for index, row in funded_rule.iterrows():
+    # Match on Rule, Asset, Entry
+    rule_condition = (
+            (classified_data['Processing rule'] == row['Rule']) &
+            (classified_data['Asset'] == row['Asset']) &
+            (classified_data['Entry'] == row['Entry'])
+    )
+
+    # Find where volume falls between Min lot and Max lot
+    classified_row_condition = (
+            (classified_data['Volume (lots)'] >= row['Min lot']) &
+            (classified_data['Volume (lots)'] <= row['Max lot'])
+    )
+
+    # Combine both conditions
+    combined_condition = rule_condition & classified_row_condition
+
+    # Check if Markup in pips is below Min Markup in Funded Rule and adjust
+    min_markup = row['Min Markup']
+    max_markup = row['Max Markup']
+
+    markup_condition = (classified_data['Markup in pips'] < min_markup) & combined_condition
+    classified_data.loc[markup_condition, 'New Markup in pip'] = min_markup
+
+
+    # Recalculate TP broker profit with the new markup
+    def calculate_new_tp_broker_profit(row):
+        symbol = row['Platform symbol']
+        volume = row['Volume (lots)']
+        new_markup = row['New Markup in pip']
+
+        pip_values = {
+            "AUDCAD": 7.24, "AUDJPY": 6.59, "AUDNZD": 5.89, "AUDSGD": 7.35, "AUDUSD": 10.0, "CADCHF": 11.09,
+            # More entries here...
+            "AUDCHF": 11.09
+        }
+
+        pip_value = pip_values.get(symbol, 10.0)  # Default to 10.0 if symbol not found
+        return new_markup * volume * pip_value
+
+
+    classified_data['New Tp broker profit'] = classified_data.apply(calculate_new_tp_broker_profit, axis=1)
+
+# Save the updated classified dataset as 'dataset6.csv'
+updated_data_file = os.path.join(pycharm_projects_folder, 'dataset9.csv')
+classified_data.to_csv(updated_data_file, index=False)
+
+
+# Save the updated Funded Rule CSV as 'Rule6.csv', highlighting the changed Min Markup cells
+def highlight_changes(row):
+    # Compare the Min Markup values for the current row with the original value in the Funded Rule
+    if row['Min Markup'] != funded_rule.loc[row.name, 'Min Markup']:
+        return ['background-color: yellow']
+    else:
+        return ['']
+
+
+# Apply the function row-wise using axis=1 for the 'Min Markup' column
+styled_rule = funded_rule.style.apply(highlight_changes, axis=1, subset=['Min Markup'])
+
+# Save the styled DataFrame to an Excel file
+updated_rule_file = os.path.join(pycharm_projects_folder, 'Rule9.xlsx')  # Saving as .xlsx
+styled_rule.to_excel(updated_rule_file, engine='openpyxl', index=False)
+
+print("Model training and prediction complete. Updated files 'Rule9.xlsx' and 'dataset9.csv' saved.")
