@@ -1,0 +1,90 @@
+import os
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.metrics import mean_squared_error, r2_score
+
+# Step 1: Define paths for input and output files
+pycharm_projects_folder = os.path.join(os.path.expanduser("~"), "PycharmProjects")
+classified_data_file = os.path.join(pycharm_projects_folder, 'classified_trades.csv')  # Your classified data
+rule_file = os.path.join(pycharm_projects_folder, 'Funded Rule.csv')  # Funded rule file
+output_rule_file = os.path.join(pycharm_projects_folder, "updated_rule.csv")
+output_comparison_file = os.path.join(pycharm_projects_folder, "profit_comparison2.csv")
+
+# Step 2: Load the datasets
+classified_data_df = pd.read_csv(classified_data_file)
+rule_df = pd.read_csv(rule_file)
+
+# Step 3: Preprocessing - Strip spaces from column names, and ensure proper data types
+classified_data_df.columns = classified_data_df.columns.str.strip()
+rule_df.columns = rule_df.columns.str.strip()
+
+# Convert 'Volume (lots)' and 'Markup in pips' to numeric
+classified_data_df['Volume (lots)'] = pd.to_numeric(classified_data_df['Volume (lots)'], errors='coerce')
+classified_data_df['Markup in pips'] = pd.to_numeric(classified_data_df['Markup in pips'], errors='coerce')
+
+
+# Step 4: Define a function to update Min Markup for each rule
+def update_min_markup(row, model):
+    # Match the classified data with the rule
+    matching_rule = rule_df[
+        (rule_df['Rule'] == row['Rule']) &
+        (rule_df['Asset'] == row['Asset']) &
+        (rule_df['Min lot'] <= row['Volume (lots)']) &
+        (rule_df['Max lot'] >= row['Volume (lots)']) &
+        (rule_df['Entry'] == row['Entry'])
+        ]
+
+    if matching_rule.empty:
+        return row['Markup in pips'], row['TP broker profit']  # No matching rule found, return current values
+
+    # Get the Min and Max markup from the matching rule
+    current_min_markup = matching_rule['Min Markup'].values[0]
+    max_markup = matching_rule['Max Markup'].values[0]
+
+    # Predict new Min Markup based on data tendencies (Example: Increase by a small factor)
+    if current_min_markup < max_markup:
+        new_min_markup = current_min_markup * 1.01  # Increase by 1%, ensure it's within max markup
+        if new_min_markup > max_markup:
+            new_min_markup = max_markup
+    else:
+        new_min_markup = current_min_markup  # If it's already at max markup
+
+    # Update TP broker profit based on new markup (using a pre-trained model)
+    test_X = row[['Volume (lots)', 'Markup in pips']].values.reshape(1, -1)
+    predicted_profit = model.predict(test_X)[0]
+
+    return new_min_markup, predicted_profit
+
+
+# Step 5: Feature Selection: Only use relevant columns for training the model
+X = classified_data_df[['Volume (lots)', 'Markup in pips']]
+y = classified_data_df['TP broker profit']
+
+# Step 6: Split the data into training and testing sets (70% train, 30% test)
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
+
+# Step 7: Train a Random Forest Regressor to predict TP broker profit
+model = RandomForestRegressor(n_estimators=200, random_state=42)
+model.fit(X_train, y_train)
+
+# Step 8: Predictions on the test set
+y_pred = model.predict(X_test)
+
+# Step 9: Evaluate the model performance
+rmse = np.sqrt(mean_squared_error(y_test, y_pred))
+r2 = r2_score(y_test, y_pred)
+print(f'Root Mean Squared Error (RMSE): {rmse}')
+print(f'R-squared (R2): {r2}')
+
+# Step 10: Apply the markup adjustment dynamically for each rule and calculate TP profit comparison
+classified_data_df['New Min Markup'] = classified_data_df.apply(lambda row: update_min_markup(row, model)[0], axis=1)
+classified_data_df['Updated TP Broker Profit'] = classified_data_df.apply(lambda row: update_min_markup(row, model)[1],
+                                                                          axis=1)
+
+# Step 11: Save the updated rules and comparison to CSV files
+classified_data_df.to_csv(output_comparison_file, index=False)
+
+print(f'Updated rules saved to {output_rule_file}')
+print(f'Comparison saved to {output_comparison_file}')
