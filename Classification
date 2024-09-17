@@ -1,0 +1,69 @@
+import os
+import pandas as pd
+import numpy as np
+
+# Step 1: Define paths for input and output files
+pycharm_projects_folder = os.path.join(os.path.expanduser("~"), "PycharmProjects")
+input_file = os.path.join(pycharm_projects_folder, '5REAL_B.csv')  # Correct filename with extension
+output_classified_file = os.path.join(pycharm_projects_folder, "Classified_Data.csv")  # Output file for classified data
+output_analysis_file = os.path.join(pycharm_projects_folder, "analysis_report.csv")  # Output file for analysis report
+
+# Step 2: Load the dataset
+trading_data_df = pd.read_csv(input_file)
+
+# Step 3: Preprocessing - Strip spaces from column names, and ensure proper data types
+trading_data_df.columns = trading_data_df.columns.str.strip()
+
+# Convert 'Updated Date & Time' to datetime format
+trading_data_df['Updated Date & Time'] = pd.to_datetime(trading_data_df['Updated Date & Time'], errors='coerce')
+
+# Convert 'Volume (lots)' and 'Markup in pips' to numeric
+trading_data_df['Volume (lots)'] = pd.to_numeric(trading_data_df['Volume (lots)'], errors='coerce')
+trading_data_df['Markup in pips'] = pd.to_numeric(trading_data_df['Markup in pips'], errors='coerce')
+
+# Step 4: Classify trades based on 'TP broker profit'
+def classify_tp_broker_profit(row):
+    if row['TP broker profit'] > 0:
+        return 'Profitable'
+    else:
+        return 'Non-profitable'
+
+# Apply classification to the dataset
+trading_data_df['Profit Classification'] = trading_data_df.apply(classify_tp_broker_profit, axis=1)
+
+# Step 5: Relationship Analysis
+
+# 1. Correlation Analysis: Correlation between Markup, Volume, and TP broker profit
+correlation_matrix = trading_data_df[['Markup in pips', 'Volume (lots)', 'TP broker profit']].corr()
+print("Correlation matrix:\n", correlation_matrix)
+
+# 2. Group by Processing Rule and calculate mean TP broker profit
+processing_rule_profit = trading_data_df.groupby('Processing rule')['TP broker profit'].mean().reset_index()
+processing_rule_profit.columns = ['Processing rule', 'Average TP broker profit']
+print("Average TP broker profit by Processing rule:\n", processing_rule_profit)
+
+# 3. Group by Asset and calculate mean TP broker profit
+asset_profit = trading_data_df.groupby('Asset')['TP broker profit'].mean().reset_index()
+asset_profit.columns = ['Asset', 'Average TP broker profit']
+print("Average TP broker profit by Asset:\n", asset_profit)
+
+# Step 6: Select necessary columns for classified data
+necessary_columns = ['Updated Date & Time',
+'Processing rule', 'login', 'Asset', 'Platform symbol', 'Entry',
+ 'Volume (lots)', 'Markup in pips','Lot Range', 'TP broker profit', 'Profit Classification']
+classified_data_df = trading_data_df[necessary_columns]
+
+# Step 7: Save the classified dataset
+classified_data_df.to_csv(output_classified_file, index=False)
+
+# Step 8: Save the analysis report (correlation and profitability insights)
+with open(output_analysis_file, 'w') as f:
+    f.write("Correlation Matrix:\n")
+    correlation_matrix.to_csv(f)
+    f.write("\nAverage TP Broker Profit by Processing Rule:\n")
+    processing_rule_profit.to_csv(f, index=False)
+    f.write("\nAverage TP Broker Profit by Asset:\n")
+    asset_profit.to_csv(f, index=False)
+
+print(f"Classified dataset saved to {output_classified_file}")
+print(f"Analysis report saved to {output_analysis_file}")
