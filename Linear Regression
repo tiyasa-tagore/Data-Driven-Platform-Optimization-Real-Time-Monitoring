@@ -1,0 +1,154 @@
+import os
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import train_test_split, cross_val_score
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.linear_model import LinearRegression
+from sklearn.metrics import accuracy_score, classification_report
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# Paths to your files
+pycharm_projects_folder = os.path.join(os.path.expanduser("~"), "PycharmProjects")
+classified_data_file = os.path.join(pycharm_projects_folder, 'Classified_Data.csv')
+rule_file = os.path.join(pycharm_projects_folder, 'Funded Rule.csv')
+
+# Load the datasets
+classified_data = pd.read_csv(classified_data_file)
+funded_rule = pd.read_csv(rule_file)
+
+# Preprocessing classified data: Convert profit classification to binary (Profitable = 1, Non-profitable = 0)
+classified_data['Profit Classification'] = classified_data['Profit Classification'].apply(
+    lambda x: 1 if x == 'Profitable' else 0)
+
+
+# Add a new column for Previous TP broker profit
+def calculate_prev_tp_broker_profit(row):
+    pip_values = {
+        "AUDCAD": 7.24, "AUDJPY": 6.59, "AUDNZD": 5.89, "AUDSGD": 7.35, "AUDUSD": 10.0, "CADCHF": 11.09,
+        "CADJPY": 6.59, "CADSGD": 7.35, "CHFJPY": 6.59, "EURAUD": 6.38, "EURCAD": 7.24, "EURCHF": 11.09,
+        "EURGBP": 12.25, "EURHKD": 1.28, "EURHUF": 2.84, "EURJPY": 6.61, "EURNOK": 0.90, "EURNZD": 5.90,
+        "EURSGD": 7.36, "EURTRY": 0.35, "EURUSD": 10.0, "GBPAUD": 6.36, "GBPCAD": 7.23, "GBPCHF": 11.09,
+        "GBPJPY": 6.61, "GBPNZD": 5.90, "GBPSGD": 7.36, "GBPUSD": 10.0, "MXNJPY": 6.61, "NOKJPY": 6.60,
+        "NZDCAD": 7.23, "NZDCHF": 11.09, "NZDJPY": 6.61, "NZDSGD": 7.36, "SGDJPY": 6.61, "USDCAD": 7.23,
+        "USDCHF": 11.09, "USDCNH": 1.37, "USDDKK": 1.43, "USDHUF": 2.83, "USDJPY": 6.61, "USDMXN": 0.56,
+        "USDNOK": 0.90, "USDPLN": 2.42, "USDSGD": 7.36, "USDTRY": 0.35, "USDZAR": 0.53, "ZARJPY": 6.61,
+        "USDHKD": 1.28, "SPX500": 10.0, "US30": 10.0, "GER30": 10.67, "US2000": 10.0, "UK100": 12.20,
+        "VIX": 10.0, "SWI20": 11.08, "NTH25": 21.34, "NDX100": 10.0, "JP225": 0.07, "HK50": 1.28,
+        "FRA40": 10.67, "EUSTX50": 10.67, "AUS200": 6.35, "XAUUSD": 10.0, "XPTUSD": 10.0, "XAGUSD": 50.0,
+        "USOUSD": 1.0, "UKOUSD": 1.0, "ADAUSD": 0.10, "BCHUSD": 0.01, "BTCUSD": 0.10, "DOGUSD": 0.10,
+        "ETHUSD": 0.10, "LNKUSD": 1.0, "LTCUSD": 0.10, "XLMUSD": 0.01, "XMRUSD": 0.10, "XRPUSD": 0.10,
+        "AUDCHF": 11.09
+    }
+    pip_value = pip_values.get(row['Platform symbol'], 10.0)  # Default to 10.0 if symbol not found
+    return row['Volume (lots)'] * row['Markup in pips'] * pip_value
+
+
+# Apply the calculation to each row
+classified_data['Prev TP broker profit'] = classified_data.apply(calculate_prev_tp_broker_profit, axis=1)
+
+# Feature selection: Choosing relevant columns for modeling
+X = classified_data[['Volume (lots)', 'Markup in pips']]  # Features
+y = classified_data['Profit Classification']  # Target
+
+# Split the dataset (70% train, 30% test)
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.30, random_state=42)
+
+# Step 1: Build a Random Forest Classifier with regularization (limiting depth to avoid overfitting)
+rf_classifier = RandomForestClassifier(n_estimators=100, max_depth=10, random_state=42)
+rf_classifier.fit(X_train, y_train)
+
+# Cross-validation to check for overfitting
+cross_val_scores = cross_val_score(rf_classifier, X_train, y_train, cv=5)
+print(f"Cross-validation scores: {cross_val_scores}")
+print(f"Average CV score: {np.mean(cross_val_scores):.2f}")
+
+# Predict on the test data
+y_pred = rf_classifier.predict(X_test)
+
+# Calculate accuracy and classification report
+accuracy = accuracy_score(y_test, y_pred)
+print(f"Test Set Accuracy: {accuracy:.2f}")
+print("\nClassification Report:\n", classification_report(y_test, y_pred))
+
+# Step 2: Build a Linear Regression model to predict TP broker profit
+lin_reg = LinearRegression()
+lin_reg.fit(X_train, classified_data.loc[X_train.index, 'TP broker profit'])
+
+# Predict on the test data for TP broker profit
+predicted_broker_profit = lin_reg.predict(X_test)
+
+# Analyze which rows could have been profitable by adjusting Min Markup
+for index, row in funded_rule.iterrows():
+    # Match on Rule, Asset, Entry
+    rule_condition = (
+            (classified_data['Processing rule'] == row['Rule']) &
+            (classified_data['Asset'] == row['Asset']) &
+            (classified_data['Entry'] == row['Entry'])
+    )
+
+    # Find where volume falls between Min lot and Max lot
+    classified_row_condition = (
+            (classified_data['Volume (lots)'] >= row['Min lot']) &
+            (classified_data['Volume (lots)'] <= row['Max lot'])
+    )
+
+    # Combine both conditions
+    combined_condition = rule_condition & classified_row_condition
+
+    # Check if Markup in pips is below Min Markup in Funded Rule and adjust
+    min_markup = row['Min Markup']
+
+    # Analyze the profitability and decide whether to increase Min Markup
+    # Increase the Min Markup slightly if the broker's profit is low compared to other similar sections
+    avg_profit_section = classified_data.loc[combined_condition, 'Prev TP broker profit'].mean()
+    if avg_profit_section < classified_data['Prev TP broker profit'].mean():
+        # Increase the Min Markup by a small increment (e.g., 0.1 or 0.00001 based on precision)
+        if min_markup < row['Max Markup']:  # Ensure Min Markup does not exceed Max Markup
+            row['Min Markup'] = round(min_markup + 0.1, 5)  # Adjust by an appropriate increment
+
+    # Recalculate the New Markup in pip for the updated dataset
+    markup_condition = (classified_data['Markup in pips'] < min_markup) & combined_condition
+    classified_data.loc[markup_condition, 'New Markup in pip'] = min_markup
+
+
+    # Recalculate TP broker profit with the new markup
+    def calculate_new_tp_broker_profit(row):
+        symbol = row['Platform symbol']
+        volume = row['Volume (lots)']
+        new_markup = row['New Markup in pip']
+
+        pip_values = {
+            "AUDCAD": 7.24, "AUDJPY": 6.59, "AUDNZD": 5.89, "AUDSGD": 7.35, "AUDUSD": 10.0, "CADCHF": 11.09,
+            # More entries here...
+            "AUDCHF": 11.09
+        }
+
+        pip_value = pip_values.get(symbol, 10.0)  # Default to 10.0 if symbol not found
+        return new_markup * volume * pip_value
+
+
+    classified_data['New Tp broker profit'] = classified_data.apply(calculate_new_tp_broker_profit, axis=1)
+
+# Save the updated classified dataset as 'dataset9.csv'
+updated_data_file = os.path.join(pycharm_projects_folder, 'dataset9.csv')
+classified_data.to_csv(updated_data_file, index=False)
+
+
+# Save the updated Funded Rule CSV as 'Rule9.xlsx', highlighting the changed Min Markup cells
+def highlight_changes(row):
+    # Compare the Min Markup values for the current row with the original value in the Funded Rule
+    if row['Min Markup'] != funded_rule.loc[row.name, 'Min Markup']:
+        return ['background-color: yellow']
+    else:
+        return ['']
+
+
+# Apply the function row-wise using axis=1 for the 'Min Markup' column
+styled_rule = funded_rule.style.apply(highlight_changes, axis=1, subset=['Min Markup'])
+
+# Save the styled DataFrame to an Excel file
+updated_rule_file = os.path.join(pycharm_projects_folder, 'Rule9.xlsx')  # Saving as .xlsx
+styled_rule.to_excel(updated_rule_file, engine='openpyxl', index=False)
+
+print("Model training and prediction complete. Updated files 'Rule9.xlsx' and 'dataset9.csv' saved.")
