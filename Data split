@@ -1,0 +1,107 @@
+import os
+import pandas as pd
+import numpy as np
+
+# Step 1: Define paths for input and output files
+pycharm_projects_folder = os.path.join(os.path.expanduser("~"), "PycharmProjects")
+input_file = os.path.join(pycharm_projects_folder, '5REAL_B.csv')  # Correct filename with extension
+output_classified_file = os.path.join(pycharm_projects_folder, "Lot_Data.csv")  # Output file for classified data
+
+# Step 2: Load the dataset
+trading_data_df = pd.read_csv(input_file)
+
+# Step 3: Preprocessing - Strip spaces from column names, and ensure proper data types
+trading_data_df.columns = trading_data_df.columns.str.strip()
+
+# Convert 'Updated Date & Time' to datetime format
+trading_data_df['Updated Date & Time'] = pd.to_datetime(trading_data_df['Updated Date & Time'], errors='coerce')
+
+# Convert 'Volume (lots)' and 'Markup in pips' to numeric
+trading_data_df['Volume (lots)'] = pd.to_numeric(trading_data_df['Volume (lots)'], errors='coerce')
+trading_data_df['Markup in pips'] = pd.to_numeric(trading_data_df['Markup in pips'], errors='coerce')
+
+
+# Step 4: Classify trades based on 'TP broker profit'
+def classify_tp_broker_profit(row):
+    if row['TP broker profit'] > 0:
+        return 'Profitable'
+    else:
+        return 'Non-profitable'
+
+
+# Apply classification to the dataset
+trading_data_df['Profit Classification'] = trading_data_df.apply(classify_tp_broker_profit, axis=1)
+
+# Step 5: Filter rows where 'Entry' is 'OUT' and exclude 'Crypto' assets
+filtered_df = trading_data_df[(trading_data_df['Entry'] == 'OUT') & (trading_data_df['Asset'] != 'Crypto')]
+
+
+# Step 6: Create conditions for Min lot and Max lot based on asset and volume
+def assign_lot_range(row):
+    volume = row['Volume (lots)']
+    asset = row['Asset']
+
+    if asset == 'Indices':
+        if 20 <= volume <= 30:
+            return 20, 30
+        elif 10 <= volume <= 19.99:
+            return 10, 19.99
+        elif 5 <= volume <= 9.99:
+            return 5, 9.99
+        elif 2 <= volume <= 4.99:
+            return 2, 4.99
+        elif 0.01 <= volume <= 1.99:
+            return 0.01, 1.99
+    elif asset == 'Commodities':
+        if 30 <= volume <= 40:
+            return 30, 40
+        elif 20 <= volume <= 29.99:
+            return 20, 29.99
+        elif 10 <= volume <= 19.99:
+            return 10, 19.99
+        elif 5 <= volume <= 9.99:
+            return 5, 9.99
+        elif 2 <= volume <= 4.99:
+            return 2, 4.99
+        elif 0.01 <= volume <= 1.99:
+            return 0.01, 1.99
+    elif asset == 'Forex':
+        if 30 <= volume <= 40:
+            return 30, 40
+        elif 20 <= volume <= 29.99:
+            return 20, 29.99
+        elif 10 <= volume <= 19.99:
+            return 10, 19.99
+        elif 5 <= volume <= 9.99:
+            return 5, 9.99
+        elif 2 <= volume <= 4.99:
+            return 2, 4.99
+        elif 0.01 <= volume <= 1.99:
+            return 0.01, 1.99
+
+    return None, None
+
+
+# Apply the function to assign Min lot and Max lot
+filtered_df[['Min lot', 'Max lot']] = filtered_df.apply(assign_lot_range, axis=1, result_type="expand")
+
+# Step 7: Select necessary columns for classified data
+necessary_columns = ['Updated Date & Time', 'Processing rule', 'login', 'Asset', 'Platform symbol',
+                     'Entry', 'Volume (lots)','Trader profit', 'Markup in pips', 'TP broker profit',
+                     'Profit Classification', 'Min lot', 'Max lot']
+
+classified_data_df = filtered_df[necessary_columns]
+
+# Step 8: Save the classified dataset (filtered based on 'OUT' and excluding 'Crypto')
+classified_data_df.to_csv(output_classified_file, index=False)
+print(f"Classified dataset saved to {output_classified_file}")
+
+# Step 9: Split the dataset into separate CSV files by asset type (excluding Crypto)
+assets = ['Forex', 'Commodities', 'Indices']
+
+for asset in assets:
+    asset_df = classified_data_df[classified_data_df['Asset'] == asset]
+    output_file = os.path.join(pycharm_projects_folder, f"{asset}_Data.csv")
+    asset_df.to_csv(output_file, index=False)
+    print(f"{asset} dataset saved to {output_file}")
+
