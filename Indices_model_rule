@@ -1,0 +1,150 @@
+import os
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import train_test_split
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.metrics import accuracy_score
+
+# Step 1: Define paths for input and output files
+pycharm_projects_folder = os.path.join(os.path.expanduser("~"), "PycharmProjects")
+input_file = os.path.join(pycharm_projects_folder, 'Indices_Data.csv')  # Correct filename with extension
+output_predictions_file = os.path.join(pycharm_projects_folder,
+                                       "Min_Markup_Predictions_Indices.csv")  # Output file for predictions
+
+# Step 2: Load the dataset
+trading_data_df = pd.read_csv(input_file)
+
+# Step 3: Preprocessing - Strip spaces from column names, and ensure proper data types
+trading_data_df.columns = trading_data_df.columns.str.strip()
+
+# Convert 'Updated Date & Time' to datetime format
+trading_data_df['Updated Date & Time'] = pd.to_datetime(trading_data_df['Updated Date & Time'], errors='coerce')
+
+# Convert 'Volume (lots)' and 'Markup in pips' to numeric
+trading_data_df['Volume (lots)'] = pd.to_numeric(trading_data_df['Volume (lots)'], errors='coerce')
+trading_data_df['Markup in pips'] = pd.to_numeric(trading_data_df['Markup in pips'], errors='coerce')
+
+# Step 4: Define rules for Indices (Market Open, London Open, NY Open, Regular, NYSE Indices, Late Trading Hours)
+rule_conditions_indices = {
+    'Market Open Hour': [
+        (20, 30, 1.3, 2),
+        (10, 19.99, 1, 1.6),
+        (5, 9.99, 0.9, 1.2),
+        (2, 4.99, 0.2, 0.6),
+        (0.01, 1.99, 0, 0.2)
+    ],
+    'London Open': [
+        (20, 30, 0.9, 1.6),
+        (10, 19.99, 0.7, 1.5),
+        (5, 9.99, 0.6, 1.2),
+        (2, 4.99, 0.25, 0.6),
+        (0.01, 1.99, 0.1, 0.3)
+    ],
+    'NY Open': [
+        (20, 30, 0.9, 1.6),
+        (10, 19.99, 0.7, 1.5),
+        (5, 9.99, 0.6, 1.2),
+        (2, 4.99, 0.25, 0.6),
+        (0.01, 1.99, 0.1, 0.3)
+    ],
+    'Regular': [
+        (20, 30, 1, 1.6),
+        (10, 19.99, 0.7, 1.2),
+        (5, 9.99, 0.5, 0.8),
+        (2, 4.99, 0.2, 0.5),
+        (0.01, 1.99, 0, 0.3)
+    ],
+    'NYSE Indices': [
+        (20, 30, 1.3, 1.9),
+        (10, 19.99, 1.1, 1.7),
+        (5, 9.99, 0.8, 1.5),
+        (2, 4.99, 0.2, 0.9),
+        (0.01, 1.99, 0.1, 0.3)
+    ],
+    'Late Trading Hours': [
+        (20, 30, 1.2, 2.1),
+        (10, 19.99, 0.8, 1.5),
+        (5, 9.99, 0.5, 1.2),
+        (2, 4.99, 0.4, 1),
+        (0.01, 1.99, 0.2, 0.5)
+    ]
+}
+
+
+# Step 5: Add Min lot, Max lot, Min Markup, and Max Markup based on processing rule and volume for Indices
+def assign_markup_indices(row):
+    volume = row['Volume (lots)']
+    rule = row['Processing rule']
+
+    if row['Asset'] == 'Indices' and rule in rule_conditions_indices:
+        for condition in rule_conditions_indices[rule]:
+            if condition[0] <= volume <= condition[1]:
+                return condition[0], condition[1], condition[2], condition[3]
+    return None, None, None, None
+
+
+# Apply the function to add the columns for Indices
+trading_data_df[['Min lot', 'Max lot', 'Min Markup', 'Max Markup']] = trading_data_df.apply(assign_markup_indices,
+                                                                                            axis=1,
+                                                                                            result_type="expand")
+
+# Step 6: Drop rows where Min Markup or Max Markup is missing (non-Indices or unmatched cases)
+trading_data_df = trading_data_df.dropna(subset=['Min Markup', 'Max Markup'])
+
+
+# Step 7: Prepare the dataset for model training (features and labels)
+def can_increase_markup(row):
+    if row['Min Markup'] == row['Max Markup']:
+        return 0  # No room to increase
+    if row['Min Markup'] < row['Max Markup']:
+        return 1  # Can increase
+    return 0
+
+
+trading_data_df['Can Increase Markup'] = trading_data_df.apply(can_increase_markup, axis=1)
+
+# Step 8: Split data into features (X) and labels (y)
+X = trading_data_df[['Min lot', 'Max lot', 'Min Markup', 'Max Markup']]
+y = trading_data_df['Can Increase Markup']
+
+# Step 9: Split the dataset into 70% training and 30% testing
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
+
+# Step 10: Train the model
+model = DecisionTreeClassifier()
+model.fit(X_train, y_train)
+
+# Step 11: Test the model and calculate accuracy
+y_pred = model.predict(X_test)
+accuracy = accuracy_score(y_test, y_pred)
+print(f"Model accuracy: {accuracy * 100:.2f}%")
+
+
+# Step 12: Predict the new minimum markup for the entire dataset
+def update_min_markup(row):
+    if row['Can Increase Markup'] == 1 and row['Min Markup'] < row['Max Markup']:
+        increment = 0.01  # For Indices, we increment by 0.01
+        new_min_markup = row['Min Markup'] + increment
+        if new_min_markup < row['Max Markup']:
+            return new_min_markup
+        return row['Min Markup']
+    return row['Min Markup']
+
+
+trading_data_df['New Min Markup'] = trading_data_df.apply(update_min_markup, axis=1)
+
+# Step 13: Group by 'Processing rule', 'Asset', 'Min lot', and 'Max lot' and assign only one unique New Min Markup
+grouped_df = trading_data_df.groupby(['Processing rule', 'Asset', 'Min lot', 'Max lot']).agg({
+    'Min Markup': 'first',
+    'Max Markup': 'first',
+    'New Min Markup': 'mean'  # You can replace 'mean' with 'median' or 'mode' if you prefer
+}).reset_index()
+
+# Step 14: Filter the data where the Min Markup has changed (i.e., New Min Markup > Min Markup)
+filtered_df = grouped_df[grouped_df['New Min Markup'] > grouped_df['Min Markup']]
+
+# Step 15: Save the results to a CSV (only rows where Min Markup has changed)
+results_df = filtered_df[
+    ['Processing rule', 'Asset', 'Min lot', 'Max lot', 'Min Markup', 'New Min Markup', 'Max Markup']]
+results_df.to_csv(output_predictions_file, index=False)
+print(f"Predicted Min Markup for Indices saved to {output_predictions_file}")
