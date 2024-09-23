@@ -1,0 +1,107 @@
+import os
+import pandas as pd
+
+# Step 1: Define paths for input and output files
+pycharm_projects_folder = os.path.join(os.path.expanduser("~"), "PycharmProjects")
+input_file = os.path.join(pycharm_projects_folder, 'Commodities_Data_In.csv')  # Adjusted for Indices data
+output_file = os.path.join(pycharm_projects_folder, 'Test_Commodities_In.csv')
+
+# Step 2: Define the pip value mapping (sample values)
+pip_values = {
+    "AUDCAD": 7.24, "AUDJPY": 6.59, "AUDNZD": 5.89, "AUDSGD": 7.35, "AUDUSD": 10.0, "CADCHF": 11.09,
+    "CADJPY": 6.59, "CADSGD": 7.35, "CHFJPY": 6.59, "EURAUD": 6.38, "EURCAD": 7.24, "EURCHF": 11.09,
+    "EURGBP": 12.25, "EURHKD": 1.28, "EURHUF": 2.84, "EURJPY": 6.61, "EURNOK": 0.90, "EURNZD": 5.90,
+    "EURSGD": 7.36, "EURTRY": 0.35, "EURUSD": 10.0, "GBPAUD": 6.36, "GBPCAD": 7.23, "GBPCHF": 11.09,
+    "GBPJPY": 6.61, "GBPNZD": 5.90, "GBPSGD": 7.36, "GBPUSD": 10.0, "MXNJPY": 6.61, "NOKJPY": 6.60,
+    "NZDCAD": 7.23, "NZDCHF": 11.09, "NZDJPY": 6.61, "NZDSGD": 7.36, "SGDJPY": 6.61, "USDCAD": 7.23,
+    "USDCHF": 11.09, "USDCNH": 1.37, "USDDKK": 1.43, "USDHUF": 2.83, "USDJPY": 6.61, "USDMXN": 0.56,
+    "USDNOK": 0.90, "USDPLN": 2.42, "USDSGD": 7.36, "USDTRY": 0.35, "USDZAR": 0.53, "ZARJPY": 6.61,
+    "USDHKD": 1.28, "SPX500": 10.0, "US30": 10.0, "GER30": 10.67, "US2000": 10.0, "UK100": 12.20,
+    "VIX": 10.0, "SWI20": 11.08, "NTH25": 21.34, "NDX100": 10.0, "JP225": 0.07, "HK50": 1.28,
+    "FRA40": 10.67, "EUSTX50": 10.67, "AUS200": 6.35, "XAUUSD": 10.0, "XPTUSD": 10.0, "XAGUSD": 50.0,
+    "USOUSD": 1.0, "UKOUSD": 1.0, "ADAUSD": 0.10, "BCHUSD": 0.01, "BTCUSD": 0.10, "DOGUSD": 0.10,
+    "ETHUSD": 0.10, "LNKUSD": 1.0, "LTCUSD": 0.10, "XLMUSD": 0.01, "XMRUSD": 0.10, "XRPUSD": 0.10,
+    "AUDCHF": 11.09
+}
+
+# Step 3: Define the markup thresholds
+markup_rules = [
+    # London Open rules
+    ('London Open', 0.01, 1.99, 0.01), ('London Open', 2, 4.99, 0.02),
+    ('London Open', 5, 9.99, 0.03), ('London Open', 10, 19.99, 0.06),
+
+    # Market Open Hour rules
+    ('Market Open Hour', 0.01, 1.99, 0.01), ('Market Open Hour', 2, 4.99, 0.02),
+    ('Market Open Hour', 5, 9.99, 0.04), ('Market Open Hour', 10, 19.99, 0.06),
+
+    # NY Open rules
+    ('NY Open', 0.01, 1.99, 0.01), ('NY Open', 2, 4.99, 0.02),
+    ('NY Open', 5, 9.99, 0.03), ('NY Open', 10, 19.99, 0.06),
+
+    # Regular rules
+    ('Regular', 2, 4.99, 0.02), ('Regular', 5, 9.99, 0.03),
+    ('Regular', 10, 19.99, 0.06), ('Regular', 20, 29.99, 0.09),
+    ('Regular', 30, 40, 0.09)
+]
+
+# Step 4: Load the dataset
+df = pd.read_csv(input_file)
+
+# Step 5: Function to calculate Prev TP broker profit based on original Markup in pips
+def calculate_prev_tp_broker_profit(row):
+    symbol = row['Platform symbol']
+    markup_in_pips = row['Markup in pips']
+    volume_lots = row['Volume (lots)']
+
+    if symbol in pip_values:
+        pip_value = pip_values[symbol]
+        return markup_in_pips * volume_lots * pip_value
+    else:
+        return 0  # Return 0 if no pip_value is found for the symbol
+
+# Step 6: Function to calculate New Markup in pips
+def calculate_new_markup(row):
+    symbol = row['Platform symbol']
+    markup_in_pips = row['Markup in pips']
+    volume_lots = row['Volume (lots)']
+
+    # Apply the markup rules based on volume and markup thresholds
+    for rule, min_lot, max_lot, min_markup in markup_rules:
+        if min_lot <= volume_lots <= max_lot and markup_in_pips < min_markup:
+            return min_markup
+    return None  # Return blank (None) if markup is higher than threshold
+
+# Step 7: Function to calculate New TP broker profit based on New Markup in pips
+def calculate_new_tp_broker_profit(row):
+    symbol = row['Platform symbol']
+    new_markup_in_pips = row['New Markup in pips']
+    volume_lots = row['Volume (lots)']
+
+    if pd.isna(new_markup_in_pips):
+        return None  # Skip calculation if new_markup_in_pips is blank
+
+    if symbol in pip_values:
+        pip_value = pip_values[symbol]
+        return new_markup_in_pips * volume_lots * pip_value
+    else:
+        return 0  # Return 0 if no pip_value is found for the symbol
+
+# Step 8: Function to calculate Specific Prev TP broker profit
+def calculate_specific_prev_tp_broker_profit(row):
+    new_tp_broker_profit = row['New TP broker profit']
+    prev_tp_broker_profit = row['Prev TP broker profit']
+
+    if pd.isna(new_tp_broker_profit):
+        return None  # Return blank if New TP broker profit is blank
+    return prev_tp_broker_profit  # Copy the value of Prev TP broker profit if New TP broker profit exists
+
+# Step 9: Apply the functions to create the new columns
+df['Prev TP broker profit'] = df.apply(calculate_prev_tp_broker_profit, axis=1)
+df['New Markup in pips'] = df.apply(calculate_new_markup, axis=1)
+df['New TP broker profit'] = df.apply(calculate_new_tp_broker_profit, axis=1)
+df['Specific Prev TP broker profit'] = df.apply(calculate_specific_prev_tp_broker_profit, axis=1)
+
+# Step 10: Save the result to a new CSV file
+df.to_csv(output_file, index=False)
+
+print(f"Data has been successfully saved to {output_file}")
