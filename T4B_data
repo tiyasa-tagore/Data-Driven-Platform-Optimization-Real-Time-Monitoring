@@ -1,0 +1,222 @@
+import pandas as pd
+import numpy as np
+import os
+from datetime import datetime, timedelta
+from sqlalchemy import create_engine
+
+# Database connection details
+dbname = "api_backend"
+user = "readonly_user"
+password = "password123"
+host = "production-8-sep-night.cqtlpb5sm2vt.ap-northeast-1.rds.amazonaws.com"
+port = 3306
+
+# Path to the PycharmProjects directory
+pycharm_projects_folder = os.path.join(os.path.expanduser("~"), "PycharmProjects")
+input_file = os.path.join(pycharm_projects_folder, 'T4B data_f2.csv')  # Corrected the filename extension
+output_file_real_plus = os.path.join(pycharm_projects_folder, "5REAL_PLUS.csv")
+output_file_real_b = os.path.join(pycharm_projects_folder, "5REAL_B.csv")
+
+
+# Step 1: Add 3 hours to the "Date & Time (UTC)" column and update the date if necessary
+def update_datetime(df):
+    df['Date & Time (UTC)'] = pd.to_datetime(df['Date & Time (UTC)'], format='%d.%m.%Y %H:%M:%S')
+    df['Updated Date & Time'] = df['Date & Time (UTC)'] + timedelta(hours=3)
+    return df
+
+
+def assign_session(df):
+    # Ensure the 'Updated Date & Time' column is in datetime format and handle missing data
+    df['Updated Date & Time'] = pd.to_datetime(df['Updated Date & Time'], errors='coerce')
+
+    # Replace any NaT (missing datetime) with a placeholder datetime, this prevents errors during comparison
+    df['Updated Date & Time'].fillna(pd.Timestamp('1970-01-01 00:00:00'), inplace=True)
+
+    # Define the session conditions based on the time of day
+    session_conditions = [
+        (df['Updated Date & Time'].dt.time >= datetime.strptime("00:00:00", "%H:%M:%S").time()) &
+        (df['Updated Date & Time'].dt.time <= datetime.strptime("02:44:59", "%H:%M:%S").time()),  # Market Open Hour
+        (df['Updated Date & Time'].dt.time >= datetime.strptime("02:45:00", "%H:%M:%S").time()) &
+        (df['Updated Date & Time'].dt.time <= datetime.strptime("08:59:59", "%H:%M:%S").time()),  # Regular Prime Asia
+        (df['Updated Date & Time'].dt.time >= datetime.strptime("09:00:00", "%H:%M:%S").time()) &
+        (df['Updated Date & Time'].dt.time <= datetime.strptime("09:59:59", "%H:%M:%S").time()),  # Regular Pre London
+        (df['Updated Date & Time'].dt.time >= datetime.strptime("10:00:00", "%H:%M:%S").time()) &
+        (df['Updated Date & Time'].dt.time <= datetime.strptime("10:04:59", "%H:%M:%S").time()),  # London Open
+        (df['Updated Date & Time'].dt.time >= datetime.strptime("10:05:00", "%H:%M:%S").time()) &
+        (df['Updated Date & Time'].dt.time <= datetime.strptime("13:59:59", "%H:%M:%S").time()),  # Regular London
+        (df['Updated Date & Time'].dt.time >= datetime.strptime("14:00:00", "%H:%M:%S").time()) &
+        (df['Updated Date & Time'].dt.time <= datetime.strptime("14:59:59", "%H:%M:%S").time()),  # Pre NY
+        (df['Updated Date & Time'].dt.time >= datetime.strptime("15:00:00", "%H:%M:%S").time()) &
+        (df['Updated Date & Time'].dt.time <= datetime.strptime("15:04:59", "%H:%M:%S").time()),  # NY Open
+        (df['Updated Date & Time'].dt.time >= datetime.strptime("15:05:00", "%H:%M:%S").time()) &
+        (df['Updated Date & Time'].dt.time <= datetime.strptime("16:35:59", "%H:%M:%S").time()),  # NYSE NY
+        (df['Updated Date & Time'].dt.time >= datetime.strptime("16:36:00", "%H:%M:00").time()) &
+        (df['Updated Date & Time'].dt.time <= datetime.strptime("19:00:59", "%H:%M:%S").time()),  # NY
+        (df['Updated Date & Time'].dt.time >= datetime.strptime("19:01:00", "%H:%M:%S").time()) &
+        (df['Updated Date & Time'].dt.time <= datetime.strptime("21:00:59", "%H:%M:%S").time()),
+        # Mild Late Trading Hours NY
+        (df['Updated Date & Time'].dt.time >= datetime.strptime("21:01:00", "%H:%M:%S").time()) &
+        (df['Updated Date & Time'].dt.time <= datetime.strptime("22:59:59", "%H:%M:%S").time()),
+        # Medium Late Trading Hours
+        (df['Updated Date & Time'].dt.time >= datetime.strptime("23:00:00", "%H:%M:%S").time()) &
+        (df['Updated Date & Time'].dt.time <= datetime.strptime("23:59:59", "%H:%M:%S").time())
+        # Hard Late Trading Hours (inclusive of 23:59)
+    ]
+
+    session_names = [
+        'Market Open Hour', 'Regular Prime Asia', 'Regular Pre London', 'London Open', 'Regular London',
+        'Pre NY', 'NY Open', 'NYSE NY', 'NY', 'Mild Late Trading Hours NY', 'Medium Late Trading Hours',
+        'Hard Late Trading Hours'
+    ]
+
+    # Apply the session conditions to assign the session name
+    df['Session name'] = np.select(session_conditions, session_names, default='Unknown')
+
+    return df
+
+
+# Step 3: Add a new column "Asset" based on the "Platform symbol"
+def assign_asset_class(df, crypto_list, commodities_list, indices_list, forex_list):
+    conditions = [
+        df['Platform symbol'].isin(crypto_list),
+        df['Platform symbol'].isin(commodities_list),
+        df['Platform symbol'].isin(indices_list),
+        df['Platform symbol'].isin(forex_list)
+    ]
+
+    asset_class = ['Crypto', 'Commodities', 'Indices', 'Forex']
+
+    df['Asset'] = np.select(conditions, asset_class, default='Unknown')
+    return df
+
+
+# Step 4: Create another column "Lot Range" based on "Volume (lots)"
+def assign_lot_range(df):
+    lot_ranges = [
+        (0.01, 1.99), (2, 4.99), (5, 9.99), (10, 19.99), (20, 40),
+        (40, 80), (80, 160), (160, 320), (320, 640), (640, 1000), (1000, 2000)
+    ]
+
+    labels = [
+        '0.01 to 1.99', '2 to 4.99', '5 to 9.99', '10 to 19.99', '20 to 40',
+        '40 to 80', '80 to 160', '160 to 320', '320 to 640', '640 to 1000', '1000 to 2000'
+    ]
+
+    for i, (min_lot, max_lot) in enumerate(lot_ranges):
+        df.loc[(df['Volume (lots)'] >= min_lot) & (df['Volume (lots)'] <= max_lot), 'Lot Range'] = labels[i]
+
+    return df
+
+
+# Step 5: Fetch country, type, and starting balance from the database using unique login values
+def fetch_login_data(unique_logins):
+    engine = create_engine(f'mysql+mysqlconnector://{user}:{password}@{host}:{port}/{dbname}')
+
+    try:
+        query = f"""
+        SELECT a.login, co.name AS country_name, a.type AS account_type, a.starting_balance
+        FROM accounts a
+        LEFT JOIN customers c ON a.customer_id = c.id
+        LEFT JOIN countries co ON c.country_id = co.id
+        WHERE a.login IN ({','.join(map(str, unique_logins))});
+        """
+
+        login_data = pd.read_sql(query, engine)
+
+        # Optimize login_data types before merging
+        login_data['login'] = login_data['login'].astype('int32')
+        login_data['account_type'] = login_data['account_type'].astype('category')
+        login_data['starting_balance'] = pd.to_numeric(login_data['starting_balance'], downcast='float')
+
+        return login_data
+
+    except Exception as e:
+        print(f"Error fetching data from database: {e}")
+        return pd.DataFrame()
+
+    finally:
+        engine.dispose()
+
+
+# Step 6: Merge the login data into the main DataFrame based on the login values
+def merge_login_data(df, login_data):
+    df = pd.merge(df, login_data, how='left', on='login')
+    return df
+
+
+# Step 7: Split data into two CSVs based on the "Group" column
+def split_and_save_by_group(df):
+    real_plus_df = df[df['Group'].str.startswith('REAL+')]
+    real_b_df = df[df['Group'].str.startswith('REAL-B')]
+
+    real_plus_df.to_csv(output_file_real_plus, index=False)
+    real_b_df.to_csv(output_file_real_b, index=False)
+    print(f"Files saved: {output_file_real_plus} and {output_file_real_b}")
+
+
+# Step 8: Optimize data types to save memory
+def optimize_dataframe(df):
+    df['login'] = df['login'].astype('int32')
+    df['Volume (lots)'] = pd.to_numeric(df['Volume (lots)'], downcast='float')
+    df['Platform symbol'] = df['Platform symbol'].astype('category')
+    df['Group'] = df['Group'].astype('category')
+    return df
+
+
+# Ensure that the 'Markup in pips' column doesn't display in scientific notation
+def format_columns(df):
+    # Disable scientific notation
+    pd.set_option('display.float_format', '{:.6f}'.format)
+
+    # Specifically handle 'Markup in pips' column if it exists
+    if 'Markup in pips' in df.columns:
+        df['Markup in pips'] = df['Markup in pips'].apply(lambda x: f"{x:.6f}")
+
+    return df
+
+
+# Main function to execute the transformations
+def main():
+    # Load your existing dataset from CSV
+    df = pd.read_csv(input_file)
+
+    # Optimize dataframe for memory efficiency
+    df = optimize_dataframe(df)
+
+    # Perform transformations
+    df = update_datetime(df)
+    df = assign_session(df)
+
+    # Asset lists
+    crypto_list = ["ADAUSD", "BCHUSD", "BTCUSD", "DOGUSD", "ETHUSD", "LNKUSD", "LTCUSD", "XLMUSD", "XMRUSD", "XRPUSD"]
+    commodities_list = ["UKOUSD", "USOUSD", "XAUUSD", "XAGUSD", "XPTUSD"]
+    indices_list = ["AUS200", "HK50", "EUSTX50", "FRA40", "GER30", "NTH25", "SWI20", "SPX500", "UK100",
+                    "US30", "JP225", "US2000", "NDX100"]
+    forex_list = ["AUDCAD", "AUDCHF", "AUDJPY", "AUDNZD", "AUDSGD", "AUDUSD", "CADCHF", "CADJPY", "CHFJPY", "EURAUD",
+                  "EURCAD", "EURCHF", "EURGBP", "EURHKD", "EURHUF", "EURJPY", "EURNOK", "EURNZD", "EURSGD", "EURTRY",
+                  "EURUSD", "GBPAUD", "GBPCAD", "GBPCHF", "GBPJPY", "GBPNZD", "GBPSGD", "GBPUSD", "MXNJPY", "NOKJPY",
+                  "NZDCAD", "NZDCHF", "NZDJPY", "NZDSGD", "NZDUSD", "SGDJPY", "USDCAD", "USDCHF", "USDCNH", "USDDKK",
+                  "USDHKD", "USDHUF", "USDJPY", "USDMXN", "USDNOK", "USDPLN", "USDSEK", "USDSGD", "USDTRY", "USDZAR",
+                  "ZARJPY", "CADEUR"]
+
+    df = assign_asset_class(df, crypto_list, commodities_list, indices_list, forex_list)
+    df = assign_lot_range(df)
+
+    # Fetch unique logins
+    unique_logins = df['login'].unique().tolist()
+
+    # Fetch data from the database using the unique logins
+    login_data = fetch_login_data(unique_logins)
+
+    # Merge the login data into the main DataFrame
+    df = merge_login_data(df, login_data)
+
+    # Format the 'Markup in pips' column and ensure no scientific notation
+    df = format_columns(df)
+
+    # Split and save the files
+    split_and_save_by_group(df)
+
+
+if __name__ == "__main__":
+    main()
