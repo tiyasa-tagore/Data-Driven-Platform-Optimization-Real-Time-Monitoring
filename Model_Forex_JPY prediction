@@ -1,0 +1,151 @@
+import os
+import pandas as pd
+import numpy as np
+from sklearn.model_selection import train_test_split
+from sklearn.tree import DecisionTreeClassifier
+from sklearn.metrics import accuracy_score
+
+# Step 1: Define paths for input and output files
+pycharm_projects_folder = os.path.join(os.path.expanduser("~"), "PycharmProjects")
+input_file = os.path.join(pycharm_projects_folder, 'Forex_Data_In.csv')  # Correct filename with extension
+output_predictions_file = os.path.join(pycharm_projects_folder, "Min_Markup_Predictions_Forex5.csv")  # Output file for predictions
+
+# Step 2: Load the dataset
+trading_data_df = pd.read_csv(input_file)
+
+# Step 3: Preprocessing - Strip spaces from column names, and ensure proper data types
+trading_data_df.columns = trading_data_df.columns.str.strip()
+
+# Convert 'Updated Date & Time' to datetime format
+trading_data_df['Updated Date & Time'] = pd.to_datetime(trading_data_df['Updated Date & Time'], errors='coerce')
+
+# Convert 'Volume (lots)' and 'Markup in pips' to numeric
+trading_data_df['Volume (lots)'] = pd.to_numeric(trading_data_df['Volume (lots)'], errors='coerce')
+trading_data_df['Markup in pips'] = pd.to_numeric(trading_data_df['Markup in pips'], errors='coerce')
+
+# Step 4: Define rules for Min lot, Max lot, Min Markup, Max Markup (for Forex only)
+rule_conditions = {
+    'Market Open Hour': [
+        (30, 40, 0.00011, 0.00019),
+        (20, 29.99, 0.00006, 0.00017),
+        (10, 19.99, 0.00011, 0.00011),
+        (5, 9.99, 0.00003, 0.00007),
+        (2, 4.99, 0.00002, 0.00004),
+        (0.01, 1.99, 0.00001, 0.00002)
+    ],
+    'London Open': [
+        (30, 40, 0.00007, 0.00016),
+        (20, 29.99, 0.00006, 0.00014),
+        (10, 19.99, 0.00004, 0.00009),
+        (5, 9.99, 0.00002, 0.00004),
+        (2, 4.99, 0.00001, 0.00003),
+        (0.01, 1.99, 0, 0.00001)
+    ],
+    'NY Open': [
+        (30, 40, 0.00007, 0.00016),
+        (20, 29.99, 0.00006, 0.00014),
+        (10, 19.99, 0.00004, 0.00009),
+        (5, 9.99, 0.00002, 0.00004),
+        (2, 4.99, 0.00001, 0.00003),
+        (0.01, 1.99, 0, 0.00001)
+    ],
+    'Regular': [
+        (30, 40, 0.00007, 0.00016),
+        (20, 29.99, 0.00005, 0.00013),
+        (10, 19.99, 0.00003, 0.00007),
+        (5, 9.99, 0.00001, 0.00003),
+        (2, 4.99, 0.00001, 0.00002)
+    ],
+    'Late Trading Hours': [
+        (30, 40, 0.00009, 0.00021),
+        (20, 29.99, 0.00004, 0.00013),
+        (10, 19.99, 0.00003, 0.00008),
+        (2, 9.99, 0.00001, 0.00005),
+        (0.01, 1.99, 0, 0.00002)
+    ]
+}
+
+# Step 5: Add Min lot, Max lot, Min Markup, and Max Markup based on processing rule and volume
+def assign_markup(row):
+    volume = row['Volume (lots)']
+    rule = row['Processing rule']
+
+    if row['Asset'] == 'Forex' and rule in rule_conditions:
+        for condition in rule_conditions[rule]:
+            if condition[0] <= volume <= condition[1]:
+                return condition[0], condition[1], condition[2], condition[3]
+    return None, None, None, None
+
+
+# Apply the function to add the columns
+trading_data_df[['Min lot', 'Max lot', 'Min Markup', 'Max Markup']] = trading_data_df.apply(assign_markup, axis=1, result_type="expand")
+
+# Step 6: Drop rows where Min Markup or Max Markup is missing (non-Forex or unmatched cases)
+trading_data_df = trading_data_df.dropna(subset=['Min Markup', 'Max Markup'])
+
+# Step 7: Add a new column to indicate if the pair is a JPY pair
+def is_jpy_pair(row):
+    if 'JPY' in row['Platform symbol']:
+        return 1  # Yes, it's a JPY pair
+    return 0  # No, it's not a JPY pair
+
+trading_data_df['JPY'] = trading_data_df.apply(is_jpy_pair, axis=1)
+
+# Step 8: Prepare the dataset for model training (features and labels)
+def can_increase_markup(row):
+    if row['Min Markup'] == row['Max Markup']:
+        return 0  # No room to increase
+    if row['Min Markup'] < row['Max Markup']:
+        return 1  # Can increase
+    return 0
+
+# Create the 'Can Increase Markup' column before using it in the update function
+trading_data_df['Can Increase Markup'] = trading_data_df.apply(can_increase_markup, axis=1)
+
+# Step 9: Adjust markup based on model prediction, ensure precision
+def update_min_markup(row):
+    if row['Can Increase Markup'] == 1 and row['Min Markup'] < row['Max Markup']:
+        if row['JPY'] == 1:  # JPY pair
+            increment = 0.001 if row['Min Markup'] + 0.001 <= row['Max Markup'] else 0.002
+            new_min_markup = row['Min Markup'] + increment
+            return round(min(new_min_markup, row['Max Markup']), 3)  # Ensure 3 decimal places for JPY
+        else:  # Non-JPY pair
+            increment = 0.00001 if row['Min Markup'] + 0.00001 <= row['Max Markup'] else 0.00002
+            new_min_markup = row['Min Markup'] + increment
+            return round(min(new_min_markup, row['Max Markup']), 5)  # Ensure 5 decimal places for non-JPY
+    return row['Min Markup']
+
+# Step 10: Update the 'New Min Markup' column using the model logic
+trading_data_df['New Min Markup'] = trading_data_df.apply(update_min_markup, axis=1)
+
+# Step 11: Split data into features (X) and labels (y)
+X = trading_data_df[['Min lot', 'Max lot', 'Min Markup', 'Max Markup']]
+y = trading_data_df['Can Increase Markup']
+
+# Step 12: Split the dataset into 70% training and 30% testing
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.3, random_state=42)
+
+# Step 13: Train the model
+model = DecisionTreeClassifier()
+model.fit(X_train, y_train)
+
+# Step 14: Test the model and calculate accuracy
+y_pred = model.predict(X_test)
+accuracy = accuracy_score(y_test, y_pred)
+print(f"Model accuracy: {accuracy * 100:.2f}%")
+
+# Step 15: Group by 'Processing rule', 'Asset', 'Min lot', and 'Max lot' and assign only one unique New Min Markup
+grouped_df = trading_data_df.groupby(['Processing rule', 'Asset', 'Min lot', 'Max lot']).agg({
+    'Min Markup': 'first',
+    'Max Markup': 'first',
+    'New Min Markup': 'mean',  # You can replace 'mean' with 'median' or 'mode' if you prefer
+    'JPY': 'first'  # Include the JPY column
+}).reset_index()
+
+# Step 16: Filter the data where the Min Markup has changed (i.e., New Min Markup > Min Markup)
+filtered_df = grouped_df[grouped_df['New Min Markup'] > grouped_df['Min Markup']]
+
+# Step 17: Save the results to a CSV (only rows where Min Markup has changed)
+results_df = filtered_df[['Processing rule', 'Asset', 'Min lot', 'Max lot', 'Min Markup', 'New Min Markup', 'Max Markup', 'JPY']]
+results_df.to_csv(output_predictions_file, index=False)
+print(f"Predicted Min Markup saved to {output_predictions_file}")
